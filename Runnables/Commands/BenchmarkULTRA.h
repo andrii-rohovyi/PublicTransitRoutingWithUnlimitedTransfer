@@ -148,6 +148,7 @@ public:
         RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.printInfo();
+        raptorData.writeCSV("customnetwork");
         RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, true, false> algorithm(raptorData);
 
         const size_t n = getParameter<size_t>("Number of queries");
