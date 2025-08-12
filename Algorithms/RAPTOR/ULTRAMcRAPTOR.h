@@ -776,12 +776,13 @@ private:
 
         for (const StopId stop : stopsUpdatedByRoute) {
             const BagType& bag = previousRound()[stop];
-            for (const Edge edge : data.transferGraph.edgesFrom(stop)) {
-                profiler.countMetric(METRIC_EDGES);
-                const StopId toStop = StopId(data.transferGraph.get(ToVertex, edge));
-                Assert(data.isStop(toStop), "Graph contains edges to non-stop vertices!");
-                const int travelTime = data.transferGraph.get(TravelTime, edge);
-                for (size_t i = 0; i < bag.size(); i++) {
+            for (size_t i = 0; i < bag.size(); i++) {
+                for (const Edge edge : data.transferGraph.edgesFrom(stop)) {
+                    profiler.countMetric(METRIC_EDGES);
+                    const StopId toStop = StopId(data.transferGraph.get(ToVertex, edge));
+                    Assert(data.isStop(toStop), "Graph contains edges to non-stop vertices!");
+                    const int travelTime = data.transferGraph.get(TravelTime, edge);
+
                     Label newLabel;
                     newLabel.arrivalTime = bag[i].arrivalTime + travelTime;
                     newLabel.walkingDistance = bag[i].walkingDistance + travelTime;
@@ -790,6 +791,9 @@ private:
                     newLabel.parentDepartureTime = bag[i].arrivalTime;
                     newLabel.transferId = edge;
                     arrivalByTransfer(toStop, newLabel);
+                    if (bestLabels[targetStop].dominates(newLabel)) {
+                        break;
+                    }
                 }
             }
             if (initialTransfers.getBackwardDistance(stop) != INFTY) {
@@ -803,9 +807,6 @@ private:
                     newLabel.parentDepartureTime = bag[i].arrivalTime;
                     newLabel.transferId = noEdge;
                     arrivalByTransfer(targetStop, newLabel);
-                    if (bestLabels[targetStop].dominates(newLabel)) {
-                        break;
-                    }
                 }
             }
 

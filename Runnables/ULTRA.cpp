@@ -64,6 +64,7 @@ int main(int argc, char** argv) {
     new ComputeTransferTimeSavings(shell);
     new CheckMcRAPTORPruning(shell);
     new CheckULTRAMcRAPTORPruning(shell);
+    new CheckBMcRAPTORPruning(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);
