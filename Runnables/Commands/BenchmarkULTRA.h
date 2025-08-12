@@ -72,7 +72,6 @@ public:
         ParameterizedCommand(shell, "checkCSAPruning", "Checks if pruning rules yield the same results as no pruning for CSA.") {
         addParameter("CSA input file");
         addParameter("Number of queries");
-        addParameter("Precompute directed transitive graph?");
     }
 
     virtual void execute() noexcept {
@@ -82,16 +81,6 @@ public:
 
         const size_t n = getParameter<size_t>("Number of queries");
         const std::vector<StopQuery> queries = generateRandomStopQueries(csaData.numberOfStops(), n);
-
-        // RETRIEVE THE NEW PARAMETER'S VALUE
-        const bool precomputeTransitive = getParameter<bool>("Precompute directed transitive graph?");
-
-        // CONDITIONAL PRECOMPUTATION
-        if (precomputeTransitive) {
-            std::cout << "--- Precomputing directed transitive stop graph... ---" << std::endl;
-            csaData.makeDirectedTransitiveStopGraph(true); // 'true' enables verbose output
-            std::cout << "--- Done. ---" << std::endl;
-        }
 
         std::vector<int> results_no_pruning;
         std::vector<int> results_pruning_1;
@@ -478,16 +467,6 @@ public:
         std::vector<int> results_no_pruning;
         std::vector<int> results_pruning_1;
 
-        // Run with pruning rule 0 (no pruning)
-        std::cout << "--- Running with No Pruning (Rule 0) ---" << std::endl;
-        RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, true, false, false> algo_no_pruning(raptorData);
-        for (const StopQuery& query : queries) {
-            algo_no_pruning.run(query.source, query.departureTime, query.target);
-            results_no_pruning.push_back(algo_no_pruning.getEarliestArrivalTime(query.target));
-        }
-        std::cout << "--- Statistics for No Pruning (Rule 0) ---" << std::endl;
-        algo_no_pruning.getProfiler().printStatistics();
-
         // Run with pruning rule 1
         std::cout << "\n--- Running with Pruning Rule 1 ---" << std::endl;
         // The transfer graph must be sorted for pruning rule 1 to be effective
@@ -499,6 +478,16 @@ public:
         }
         std::cout << "--- Statistics for Pruning Rule 1 ---" << std::endl;
         algo_pruning_1.getProfiler().printStatistics();
+
+        // Run with pruning rule 0 (no pruning)
+        std::cout << "--- Running with No Pruning (Rule 0) ---" << std::endl;
+        RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, true, false, false> algo_no_pruning(raptorData);
+        for (const StopQuery& query : queries) {
+            algo_no_pruning.run(query.source, query.departureTime, query.target);
+            results_no_pruning.push_back(algo_no_pruning.getEarliestArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics for No Pruning (Rule 0) ---" << std::endl;
+        algo_no_pruning.getProfiler().printStatistics();
 
         // Compare the results
         bool pruning_1_correct = (results_no_pruning == results_pruning_1);

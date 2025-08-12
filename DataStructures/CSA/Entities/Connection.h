@@ -94,4 +94,48 @@ public:
 
 const std::string Connection::CSV_HEADER = "dep_stop,arr_stop,dep_time,arr_time,trip_id";
 
+
+class ConnectionSoA {
+
+    public:
+        ConnectionSoA(const size_t size = 0) {
+            resize(size);
+        }
+
+        size_t size() const {
+            return departureStopIds.size();
+        }
+
+        void resize(const size_t size) {
+            departureStopIds.resize(size);
+            arrivalStopIds.resize(size);
+            departureTimes.resize(size);
+            arrivalTimes.resize(size);
+            tripIds.resize(size);
+        }
+
+        inline void serialize(IO::Serialization& serialize) const noexcept {
+            serialize(departureStopIds, arrivalStopIds, departureTimes, arrivalTimes, tripIds);
+        }
+
+        inline void deserialize(IO::Deserialization& deserialize) noexcept {
+            deserialize(departureStopIds, arrivalStopIds, departureTimes, arrivalTimes, tripIds);
+        }
+
+        inline void applyStopPermutation(const Permutation& permutation) noexcept {
+            for (size_t i = 0; i < size(); ++i) {
+                departureStopIds[i] = permutation.permutate(departureStopIds[i]);
+                arrivalStopIds[i] = permutation.permutate(arrivalStopIds[i]);
+            }
+        }
+
+    public:
+        std::vector<StopId> departureStopIds;
+        std::vector<StopId> arrivalStopIds;
+        std::vector<int> departureTimes;
+        std::vector<int> arrivalTimes;
+        std::vector<TripId> tripIds;
+
+    };
+
 }

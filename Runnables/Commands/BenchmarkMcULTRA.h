@@ -388,3 +388,169 @@ private:
         return false;
     }
 };
+
+class CheckMcRAPTORPruning : public ParameterizedCommand {
+public:
+    CheckMcRAPTORPruning(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkMcRAPTORPruning", "Checks if McRAPTOR pruning rules yield the same results as no pruning.") {
+        addParameter("RAPTOR input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<StopQuery> queries = generateRandomStopQueries(raptorData.numberOfStops(), n);
+
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_no_pruning;
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_pruning;
+
+        // Run with no pruning (the baseline McRAPTOR)
+        std::cout << "--- Running with No Pruning ---" << std::endl;
+        RAPTOR::McRAPTOR<false, true, RAPTOR::AggregateProfiler> algo_no_pruning(raptorData);
+        for (const StopQuery& query : queries) {
+            algo_no_pruning.run(query.source, query.departureTime, query.target);
+            results_no_pruning.push_back(algo_no_pruning.getResults(query.target));
+        }
+        std::cout << "--- Statistics for No Pruning ---" << std::endl;
+        algo_no_pruning.getProfiler().printStatistics();
+
+        // Run with pruning
+        std::cout << "\n--- Running with Pruning ---" << std::endl;
+        raptorData.sortTransferGraphEdgesByTravelTime();
+        RAPTOR::McRAPTOR<true, true, RAPTOR::AggregateProfiler> algo_pruning(raptorData);
+        for (const StopQuery& query : queries) {
+            algo_pruning.run(query.source, query.departureTime, query.target);
+            results_pruning.push_back(algo_pruning.getResults(query.target));
+        }
+        std::cout << "--- Statistics for Pruning ---" << std::endl;
+        algo_pruning.getProfiler().printStatistics();
+
+        // Compare the results query by query
+        bool pruning_correct = true;
+        for (size_t i = 0; i < n; ++i) {
+            std::vector<RAPTOR::WalkingParetoLabel> no_pruning_results = results_no_pruning[i];
+            std::vector<RAPTOR::WalkingParetoLabel> pruning_results = results_pruning[i];
+
+            // Sort both result vectors to ensure a consistent, canonical order for comparison
+            std::sort(no_pruning_results.begin(), no_pruning_results.end(), [](const auto& a, const auto& b) {
+                if (a.arrivalTime != b.arrivalTime) return a.arrivalTime < b.arrivalTime;
+                return a.walkingDistance < b.walkingDistance;
+            });
+            std::sort(pruning_results.begin(), pruning_results.end(), [](const auto& a, const auto& b) {
+                if (a.arrivalTime != b.arrivalTime) return a.arrivalTime < b.arrivalTime;
+                return a.walkingDistance < b.walkingDistance;
+            });
+
+            // Compare the sorted vectors element by element
+            for (size_t j = 0; j < no_pruning_results.size(); ++j) {
+                if (no_pruning_results[j].arrivalTime != pruning_results[j].arrivalTime ||
+                    no_pruning_results[j].walkingDistance != pruning_results[j].walkingDistance) {
+                    pruning_correct = false;
+                    std::cout << "ERROR for query " << i << ", mismatch at result " << j << ":" << std::endl;
+                    std::cout << "No-pruning: (arrival=" << no_pruning_results[j].arrivalTime << ", walk=" << no_pruning_results[j].walkingDistance << ")" << std::endl;
+                    std::cout << "Pruning: (arrival=" << pruning_results[j].arrivalTime << ", walk=" << pruning_results[j].walkingDistance << ")" << std::endl;
+                    break;
+                    }
+            }
+            if (!pruning_correct) break;
+        }
+
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        if (pruning_correct) {
+            std::cout << "Pruning results match no-pruning results. The pruning is correct. ✅" << std::endl;
+        } else {
+            std::cout << "❌ ERROR: Pruning failed comparison. Results are not identical." << std::endl;
+        }
+    }
+};
+class CheckULTRAMcRAPTORPruning : public ParameterizedCommand {
+
+public:
+    CheckULTRAMcRAPTORPruning(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkULTRAMcRAPTORPruning", "Checks if ULTRA-McRAPTOR pruning rules yield the same results as no pruning.") {
+        addParameter("RAPTOR input file");
+        addParameter("CH data");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+        CH::CH ch(getParameter("CH data"));
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<StopQuery> queries = generateRandomStopQueries(raptorData.numberOfStops(), n);
+
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_no_pruning;
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_pruning;
+
+        // Run with no pruning (the baseline ULTRA-McRAPTOR)
+        std::cout << "--- Running ULTRA-McRAPTOR with No Pruning ---" << std::endl;
+        RAPTOR::ULTRAMcRAPTOR<RAPTOR::AggregateProfiler> algo_no_pruning(raptorData, ch);
+        for (const StopQuery& query : queries) {
+            algo_no_pruning.run(query.source, query.departureTime, query.target);
+            results_no_pruning.push_back(algo_no_pruning.getResults(query.target));
+        }
+        std::cout << "--- Statistics for No Pruning ---" << std::endl;
+        algo_no_pruning.getProfiler().printStatistics();
+
+        // Run with pruning
+        std::cout << "\n--- Running ULTRA-McRAPTOR with Pruning ---" << std::endl;
+        raptorData.sortTransferGraphEdgesByTravelTime();
+        RAPTOR::ULTRAMcRAPTOR_prune<RAPTOR::AggregateProfiler> algo_pruning(raptorData, ch);
+        for (const StopQuery& query : queries) {
+            algo_pruning.run(query.source, query.departureTime, query.target);
+            results_pruning.push_back(algo_pruning.getResults(query.target));
+        }
+        std::cout << "--- Statistics for Pruning ---" << std::endl;
+        algo_pruning.getProfiler().printStatistics();
+
+        // Compare the results query by query
+        bool pruning_correct = true;
+        for (size_t i = 0; i < n; ++i) {
+            std::vector<RAPTOR::WalkingParetoLabel> no_pruning_results = results_no_pruning[i];
+            std::vector<RAPTOR::WalkingParetoLabel> pruning_results = results_pruning[i];
+
+            if (no_pruning_results.size() != pruning_results.size()) {
+                pruning_correct = false;
+                std::cout << "ERROR for query " << i << ": Different number of results. No-pruning: " << no_pruning_results.size() << ", Pruning: " << pruning_results.size() << std::endl;
+                continue;
+            }
+
+            // Sort both result vectors to ensure a consistent, canonical order for comparison
+            std::sort(no_pruning_results.begin(), no_pruning_results.end(), [](const auto& a, const auto& b) {
+                if (a.arrivalTime != b.arrivalTime) return a.arrivalTime < b.arrivalTime;
+                return a.walkingDistance < b.walkingDistance;
+            });
+            std::sort(pruning_results.begin(), pruning_results.end(), [](const auto& a, const auto& b) {
+                if (a.arrivalTime != b.arrivalTime) return a.arrivalTime < b.arrivalTime;
+                return a.walkingDistance < b.walkingDistance;
+            });
+
+            // Compare the sorted vectors element by element
+            for (size_t j = 0; j < no_pruning_results.size(); ++j) {
+                if (no_pruning_results[j].arrivalTime != pruning_results[j].arrivalTime ||
+                    no_pruning_results[j].walkingDistance != pruning_results[j].walkingDistance) {
+                    pruning_correct = false;
+                    std::cout << "ERROR for query " << i << ", mismatch at result " << j << ":" << std::endl;
+                    std::cout << "No-pruning: (arrival=" << no_pruning_results[j].arrivalTime << ", walk=" << no_pruning_results[j].walkingDistance << ")" << std::endl;
+                    std::cout << "Pruning: (arrival=" << pruning_results[j].arrivalTime << ", walk=" << pruning_results[j].walkingDistance << ")" << std::endl;
+                    break;
+                }
+            }
+            if (!pruning_correct) break;
+        }
+
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        if (pruning_correct) {
+            std::cout << "Pruning results match no-pruning results. The pruning is correct. ✅" << std::endl;
+        } else {
+            std::cout << "❌ ERROR: Pruning failed comparison. Results are not identical." << std::endl;
+        }
+    }
+
+};
