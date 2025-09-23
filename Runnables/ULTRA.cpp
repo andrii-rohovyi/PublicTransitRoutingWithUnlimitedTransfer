@@ -66,6 +66,8 @@ int main(int argc, char** argv) {
     new CheckULTRAMcRAPTORPruning(shell);
     new CheckBMcRAPTORPruning(shell);
     new CheckUBMRAPTORPruning(shell);
+    new CheckDijkstraRAPTORPruning(shell);
+    new CheckMCRPruning(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);
