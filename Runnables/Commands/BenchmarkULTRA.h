@@ -13,6 +13,8 @@ using namespace Shell;
 #include "../../Algorithms/CSA/ULTRACSA.h"
 #include "../../Algorithms/RAPTOR/HLRAPTOR.h"
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstra.h"
+
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/RAPTOR/RAPTOR.h"
 #include "../../Algorithms/RAPTOR/ULTRARAPTOR.h"
@@ -541,6 +543,82 @@ public:
     }
 };
 
+class CompareMRwithTDDijkstra : public ParameterizedCommand {
+
+public:
+    CompareMRwithTDDijkstra(BasicShell& shell) :
+        ParameterizedCommand(shell, "runCheckDijkstraRAPTORPruning", "Runs the given number of random Dijkstra RAPTOR queries.") {
+        addParameter("RAPTOR input file");
+        addParameter("Graph input file");
+        addParameter("CH data");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+        TimeDependentGraph graph = TimeDependentGraph::FromBinary(getParameter("Graph input file"));
+        CH::CH ch(getParameter("CH data"));
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
+
+        std::vector<int> results_no_pruning;
+        std::vector<int> results_pruning;
+
+        // --- Run with Target Pruning disabled (baseline) ---
+        std::cout << "\n--- Running MR ---" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> algorithm_no_pruning(raptorData, ch);
+        for (const VertexQuery& query : queries) {
+            algorithm_no_pruning.run(query.source, query.departureTime, query.target);
+            results_no_pruning.push_back(algorithm_no_pruning.getEarliestArrivalTime(query.target));
+        }
+
+        std::cout << "--- Statistics MR ---" << std::endl;
+        algorithm_no_pruning.getProfiler().printStatistics();
+
+        // --- Run with Target Pruning enabled ---
+        std::cout << "\n--- Running TD-Dijktra ---" << std::endl;
+
+        using TDDijkstra = TimeDependentDijkstra<TimeDependentGraph, false>;
+        // 2. Instantiate the TimeDependentGraph (assuming it can be created from raptorData)
+        // NOTE: This conversion/instantiation is highly context-specific.
+        // We assume a suitable graph object can be initialized.
+
+        for (const VertexQuery& query : queries) {
+            // TD-Dijkstra run pattern: clear, add source (with departure time), then run
+            algorithm_td.clear();
+            algorithm_td.addSource(query.source, query.departureTime);
+            algorithm_td.run(query.target);
+
+            // NOTE: getArrivalTime is the correct accessor for TD-Dijkstra
+            algorithm_pruning.push_back(algorithm_td.getArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics TD-Dijkstra ---" << std::endl;
+        algorithm_pruning.getProfiler().printStatistics();
+
+        // --- Compare results ---
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        bool pruning_correct = true;
+        for (size_t i = 0; i < n; ++i) {
+            if (results_no_pruning[i] != results_pruning[i]) {
+                std::cout << "ERROR: Mismatch found for query " << i << "." << std::endl;
+                std::cout << "  No Pruning Result: " << results_no_pruning[i] << std::endl;
+                std::cout << "  Pruning Result: " << results_pruning[i] << std::endl;
+                pruning_correct = false;
+                break;
+            }
+        }
+
+        if (pruning_correct) {
+            std::cout << "Target pruning results match non-pruning results. The pruning is correct." << std::endl;
+        } else {
+            std::cout << "ERROR: Target pruning failed comparison. Results are not identical." << std::endl;
+        }
+    }
+};
+
 class CheckDijkstraRAPTORPruning : public ParameterizedCommand {
 
 public:
@@ -727,7 +805,18 @@ public:
 
 
         // Run with pruning rule 1
+        // Start the timer
+        auto start = std::chrono::high_resolution_clock::now();
+
         raptorData.sortTransferGraphEdgesByTravelTime();
+
+        // Stop the timer
+        auto stop = std::chrono::high_resolution_clock::now();
+        // Calculate the duration
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        // Print the duration
+        std::cout << "Time taken to sort transfer graph edges: " << duration.count() << " microseconds" << std::endl;
+
         RAPTOR::ULTRARAPTOR_prune<RAPTOR::AggregateProfiler, false> algo_pruning_1(raptorData, ch);
         for (const VertexQuery& query : queries) {
             algo_pruning_1.run(query.source, query.departureTime, query.target);

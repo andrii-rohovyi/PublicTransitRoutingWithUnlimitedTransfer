@@ -842,7 +842,7 @@ class MCR_prune {
             for (const StopId stop : stopsUpdatedByRoute) {
                 const BagType& bag = previousRound()[stop];
                 for (size_t i = 0; i < bag.size(); i++) {
-                    arrivalByEdge(stop, DijkstraLabel(bag[i], stop, i));
+                    arrivalByEdgeCheck(stop, DijkstraLabel(bag[i], stop, i));
                 }
             }
             dijkstra();
@@ -860,8 +860,7 @@ class MCR_prune {
                     profiler.countMetric(METRIC_EDGES);
                     DijkstraLabel vLabel(uLabel, data.transferGraph.get(TravelTime, edge));
                     if constexpr (TargetPruning) if (dijkstraBags[targetVertex].dominates(vLabel)){ break;}
-                    if (!dijkstraBags[v].template merge<true>(vLabel)){ continue;}
-                    queue.update(&dijkstraBags[v]);
+                    arrivalByEdge(v, vLabel);
                 }
                 if (data.isStop(u)) {
                     arrivalByTransfer(StopId(u), uLabel);
@@ -896,9 +895,14 @@ class MCR_prune {
             stopsUpdatedByRoute.insert(stop);
         }
 
-        inline bool arrivalByEdge(const Vertex vertex, const DijkstraLabel& label) noexcept {
+        inline bool arrivalByEdgeCheck(const Vertex vertex, const DijkstraLabel& label) noexcept {
             Assert(label.arrivalTime >= sourceDepartureTime, "Arriving by route BEFORE departing from the source (source departure time: " << String::secToTime(sourceDepartureTime) << " [" << sourceDepartureTime << "], arrival time: " << String::secToTime(label.arrivalTime) << " [" << label.arrivalTime << "])!");
             if constexpr (TargetPruning) if (dijkstraBags[targetVertex].dominates(label)) return false;
+            return arrivalByEdge(vertex, label);
+
+        }
+
+        inline bool arrivalByEdge(const Vertex vertex, const DijkstraLabel& label) noexcept {
             if (!dijkstraBags[vertex].template merge<true>(label)) return false;
             queue.update(&dijkstraBags[vertex]);
             return true;

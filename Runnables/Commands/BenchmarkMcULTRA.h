@@ -674,9 +674,22 @@ public:
         std::cout << "--- Statistics for No Pruning ---" << std::endl;
         algo_no_pruning.getProfiler().printStatistics();
 
+        // Run with pruning rule 1
+        // Start the timer
+        auto start = std::chrono::high_resolution_clock::now();
+
+        raptorData.sortTransferGraphEdgesByTravelTime();
+
+        // Stop the timer
+        auto stop = std::chrono::high_resolution_clock::now();
+        // Calculate the duration
+        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(stop - start);
+        // Print the duration
+        std::cout << "Time taken to sort transfer graph edges: " << duration.count() << " microseconds" << std::endl;
+
+
         // Run with pruning
         std::cout << "\n--- Running ULTRA-McRAPTOR with Pruning ---" << std::endl;
-        raptorData.sortTransferGraphEdgesByTravelTime();
         RAPTOR::ULTRAMcRAPTOR_prune<RAPTOR::AggregateProfiler> algo_pruning(raptorData, ch);
         for (const StopQuery& query : queries) {
             algo_pruning.run(query.source, query.departureTime, query.target);

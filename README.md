@@ -176,3 +176,7 @@ sudo apt-get install cmake build-essential
 sudo apt-get install libnuma-dev
 cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . --target All --config Release
 ```
+
+```
+cmake .. -DCMAKE_BUILD_TYPE=Release&& cmake --build . --target All --config Debug
+```

@@ -87,7 +87,7 @@ namespace ImplementationDetail {
     using BeginOutType = AttributeNameWrapper<19>;
     using OutDegreeType = AttributeNameWrapper<20>;
     using IncomingEdgesType = AttributeNameWrapper<21>;
-    // 22 is unused
+    using TravelTimeFunctionIndexType = AttributeNameWrapper<22>; // <--- ADDED
     using AnyAttributeType = AttributeNameWrapper<23>;
     using SizeType = AttributeNameWrapper<24>;
     using ProfileIndexType = AttributeNameWrapper<25>;
@@ -121,6 +121,8 @@ constexpr ImplementationDetail::CoordinatesType Coordinates;
 constexpr ImplementationDetail::BeginOutType BeginOut;
 constexpr ImplementationDetail::OutDegreeType OutDegree;
 constexpr ImplementationDetail::IncomingEdgesType IncomingEdges;
+// *** FIX APPLIED: ADDED MISSING GLOBAL CONSTANT ***
+constexpr ImplementationDetail::TravelTimeFunctionIndexType TravelTimeFunctionIndex;
 constexpr ImplementationDetail::AnyAttributeType AnyAttribute;
 constexpr ImplementationDetail::SizeType Size;
 constexpr ImplementationDetail::ProfileIndexType ProfileIndex;
@@ -133,16 +135,16 @@ constexpr ImplementationDetail::UnknownType Unknown;
 namespace ImplementationDetail {
 
     constexpr const char* AttributeNameStrings[] = {
-        /*  0 */ "Weight",
-        /*  1 */ "Length",
-        /*  2 */ "Distance",
-        /*  3 */ "TravelTime",
-        /*  4 */ "DepartureVertex",
-        /*  5 */ "ArrivalVertex",
-        /*  6 */ "DepartureTime",
-        /*  7 */ "ArrivalTime",
-        /*  8 */ "TripID",
-        /*  9 */ "FromVertex",
+        /* 0 */ "Weight",
+        /* 1 */ "Length",
+        /* 2 */ "Distance",
+        /* 3 */ "TravelTime",
+        /* 4 */ "DepartureVertex",
+        /* 5 */ "ArrivalVertex",
+        /* 6 */ "DepartureTime",
+        /* 7 */ "ArrivalTime",
+        /* 8 */ "TripID",
+        /* 9 */ "FromVertex",
         /* 10 */ "ToVertex",
         /* 11 */ "ViaVertex",
         /* 12 */ "ReverseEdge",
@@ -155,7 +157,7 @@ namespace ImplementationDetail {
         /* 19 */ "BeginOut",
         /* 20 */ "OutDegree",
         /* 21 */ "IncomingEdges",
-        /* 22 */ "(Unused)",
+        /* 22 */ "TravelTimeFunctionIndex",
         /* 23 */ "AnyAttribute",
         /* 24 */ "Size",
         /* 25 */ "ProfileIndex",
