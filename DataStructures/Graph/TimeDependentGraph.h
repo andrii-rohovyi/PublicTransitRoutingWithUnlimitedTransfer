@@ -128,8 +128,8 @@ public:
                 const Intermediate::StopEvent& stopEventU = trip.stopEvents[i];
                 const Intermediate::StopEvent& stopEventV = trip.stopEvents[i + 1];
 
-                const Vertex u = stopEventU.stopId;
-                const Vertex v = stopEventV.stopId;
+                const Vertex u = Vertex(stopEventU.stopId);
+                const Vertex v = Vertex(stopEventV.stopId);
 
                 tripSegments[{u, v}].emplace_back(DiscreteTrip{
                     .departureTime = stopEventU.departureTime,
@@ -140,7 +140,7 @@ public:
 
         // 3. Map Minimum Transfer Times (Walk Time)
         std::map<std::pair<Vertex, Vertex>, int> minTransferTimes;
-        const TransferGraph& interTransferGraph = inter.transferGraph;
+        const Intermediate::TransferGraph& interTransferGraph = inter.transferGraph;
 
         for (const Vertex u : interTransferGraph.vertices()) {
             for (const Edge edge : interTransferGraph.edgesFrom(u)) {
@@ -189,7 +189,7 @@ public:
 
         // 6. Add remaining non-stop vertices from the transfer graph if necessary
         if (inter.transferGraph.numVertices() > numVertices) {
-            for (Vertex i = Vertex(numVertices); i < inter.transferGraph.numVertices(); ++i) {
+            for (size_t i = numVertices; i < inter.transferGraph.numVertices(); ++i) {
                 tdGraph.graph.addVertex();
             }
         }
@@ -210,6 +210,11 @@ public:
 
     inline size_t numEdges() const noexcept {
         return graph.numEdges();
+    }
+
+    template<typename ATTRIBUTE>
+    inline auto get(const ATTRIBUTE& attribute, const Edge edge) const noexcept {
+        return graph.get(attribute, edge);
     }
 
     /**
