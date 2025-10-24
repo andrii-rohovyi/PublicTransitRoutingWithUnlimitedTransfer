@@ -83,38 +83,44 @@ public:
  */
 public:
     Dijkstra(const GRAPH& graph, const std::vector<int>& weight) :
-// Store references to the user-provided graph and weight data.
+        // Store references to the user-provided graph and weight data
         graph(graph),
         weight(weight),
         
-        // Pre-allocate memory for the priority queue to hold all vertices.
+        // Pre-allocate memory for the priority queue to hold all vertices
         Q(graph.numVertices()),
         
-        // Pre-allocate memory for the label of each vertex.
+        // Pre-allocate memory for the label of each vertex
         label(graph.numVertices()),
         
-        // Initialize the timestamp for the lazy-clearing mechanism.
+        // Initialize the timestamp for the lazy-clearing mechanism
         timeStamp(0),
         
-        // Initialize the debug counter for settled vertices.
+        // Initialize the debug counter for settled vertices
         settleCount(0) {
         // The constructor body is empty because all initialization is done
         // in the member initializer list above, which is more efficient.
     }
 
+    // A convenience constructor for when the weight type is not explicitly provided.
+    // It defaults to using the 'TravelTime' attribute from the graph.
     Dijkstra(const GRAPH& graph) :
         Dijkstra(graph, graph[TravelTime]){
     }
 
+    // A shortcut constructor for when the user *does* provide attribute name 
+    // for the weights. Takes a name wrapper as the second argument.  
     template<AttributeNameType ATTRIBUTE_NAME>
     Dijkstra(const GRAPH& graph, const AttributeNameWrapper<ATTRIBUTE_NAME> weight) :
         Dijkstra(graph, graph[weight]){
     }
 
+    // Deleted constructors for when r-value references are passed in
     Dijkstra(const GRAPH&&, const std::vector<int>&) = delete;
     Dijkstra(const GRAPH&, const std::vector<int>&&) = delete;
     Dijkstra(const GRAPH&&) = delete;
 
+    // Same as above but for the attribute name wrapper version
     template<AttributeNameType ATTRIBUTE_NAME>
     Dijkstra(const GRAPH&&, const AttributeNameWrapper<ATTRIBUTE_NAME>) = delete;
 
