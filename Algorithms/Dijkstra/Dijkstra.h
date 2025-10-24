@@ -39,16 +39,33 @@ public:
         int timeStamp;
     };
 
+/**
+ * @brief Primary constructor for the Dijkstra algorithm class.
+ * @details This constructor initializes all the necessary data structures for the algorithm.
+ * It stores references to the input graph and edge weights, 
+ * and pre-allocates memory for the priority queue and vertex labels. 
+ * @param graph A constant reference to the graph object. The algorithm will run on this graph.
+ * @param weight A constant reference to a vector of integers representing the weights of the edges in the graph.
+ * It's assumed that the weight for the edge with ID 'i' is stored at weight[i].
+ */
 public:
     Dijkstra(const GRAPH& graph, const std::vector<int>& weight) :
+        // Store references to the user-provided graph and weight data.
         graph(graph),
         weight(weight),
+        
+        // Pre-allocate memory for the priority queue to hold all vertices and to vertex labels.
         Q(graph.numVertices()),
         label(graph.numVertices()),
+
+        // Ititialize the timestamp for the lazy-clearing mechanism. 
         timeStamp(0),
+
+        // Initialize the debug counter for the settled (visited) vertices. 
         settleCount(0) {
     }
 
+    // 
     Dijkstra(const GRAPH& graph) :
         Dijkstra(graph, graph[TravelTime]){
     }
