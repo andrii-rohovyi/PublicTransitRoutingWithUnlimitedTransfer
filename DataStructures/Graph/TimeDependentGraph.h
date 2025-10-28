@@ -5,6 +5,7 @@
 #include <stdexcept>
 #include <numeric>
 #include <map>
+#include <unordered_map>
 #include <iostream>
 
 // --- CORE INCLUDES ---
@@ -81,6 +82,13 @@ struct ArrivalTimeFunction {
 // 2. TimeDependentGraph Wrapper Class
 // =========================================================================
 
+// Helper for hashing vertex pairs
+struct VertexPairHash {
+    std::size_t operator()(const std::pair<Vertex, Vertex>& p) const {
+        return std::hash<size_t>()(size_t(p.first)) ^ (std::hash<size_t>()(size_t(p.second)) << 1);
+    }
+};
+
 class TimeDependentGraph {
 private:
     using TDEdgeAttributes = Meta::List<
@@ -113,16 +121,19 @@ public:
      */
     inline static TimeDependentGraph FromIntermediate(const Intermediate::Data& inter) noexcept {
         TimeDependentGraph tdGraph;
-        const size_t numVertices = inter.numberOfStops();
+        const size_t numStops = inter.numberOfStops();
+        const size_t numVertices = inter.transferGraph.numVertices();
 
-        // 1. Initialize vertices
+        // 1. Initialize all vertices (stops + intermediate transfer vertices)
         for (size_t i = 0; i < numVertices; ++i) {
             tdGraph.graph.addVertex();
         }
 
-        // 2. Collect Discrete Trips
-        std::map<std::pair<Vertex, Vertex>, std::vector<DiscreteTrip>> tripSegments;
+        // 2. Collect Discrete Trips more efficiently using unordered_map with custom hash
+        std::unordered_map<std::pair<Vertex, Vertex>, std::vector<DiscreteTrip>, VertexPairHash> tripSegments;
+        tripSegments.reserve(inter.trips.size() * 10); // Pre-allocate to reduce rehashing
 
+        std::cout << "Building trip segments from " << inter.trips.size() << " trips..." << std::flush;
         for (const Intermediate::Trip& trip : inter.trips) {
             for (size_t i = 0; i + 1 < trip.stopEvents.size(); ++i) {
                 const Intermediate::StopEvent& stopEventU = trip.stopEvents[i];
@@ -137,9 +148,13 @@ public:
                 });
             }
         }
+        std::cout << " done (" << tripSegments.size() << " unique segments)" << std::endl;
 
-        // 3. Map Minimum Transfer Times (Walk Time)
-        std::map<std::pair<Vertex, Vertex>, int> minTransferTimes;
+        // 3. Build transfer map more efficiently
+        std::unordered_map<std::pair<Vertex, Vertex>, int, VertexPairHash> minTransferTimes;
+        minTransferTimes.reserve(inter.transferGraph.numEdges());
+        
+        std::cout << "Building transfer times..." << std::flush;
         const Intermediate::TransferGraph& interTransferGraph = inter.transferGraph;
 
         for (const Vertex u : interTransferGraph.vertices()) {
@@ -148,21 +163,32 @@ public:
                 const int travelTime = interTransferGraph.get(TravelTime, edge);
 
                 auto key = std::make_pair(u, v);
-                minTransferTimes[key] = std::min(minTransferTimes.count(key) ? minTransferTimes.at(key) : never, travelTime);
+                auto it = minTransferTimes.find(key);
+                if (it == minTransferTimes.end()) {
+                    minTransferTimes[key] = travelTime;
+                } else {
+                    it->second = std::min(it->second, travelTime);
+                }
             }
         }
+        std::cout << " done (" << minTransferTimes.size() << " transfers)" << std::endl;
 
-        // 4. Create Edges for all segments (Trip and Transfer)
+        // 4. Create Edges for all segments (Trip and Transfer combined)
+        std::cout << "Creating time-dependent edges..." << std::flush;
+        size_t edgeCount = 0;
+        
         for (auto& pair : tripSegments) {
             const Vertex u = pair.first.first;
             const Vertex v = pair.first.second;
             std::vector<DiscreteTrip>& trips = pair.second;
 
-            int walkTime = minTransferTimes.count({u, v}) ? minTransferTimes.at({u, v}) : never;
-
-            // Remove transfer entry to avoid duplication in step 5
-            if (minTransferTimes.count({u, v})) {
-                minTransferTimes.erase({u, v});
+            // Check if there's also a transfer for this edge
+            auto transferIt = minTransferTimes.find({u, v});
+            int walkTime = (transferIt != minTransferTimes.end()) ? transferIt->second : never;
+            
+            // Remove transfer to avoid duplication in step 5
+            if (transferIt != minTransferTimes.end()) {
+                minTransferTimes.erase(transferIt);
             }
 
             // Create and add the ArrivalTimeFunction (ATF)
@@ -172,6 +198,7 @@ public:
             func.walkTime = walkTime;
 
             tdGraph.addTimeDependentEdge(u, v, func);
+            edgeCount++;
         }
 
         // 5. Handle Edges with ONLY Transfers (Walk)
@@ -185,14 +212,10 @@ public:
             func.walkTime = walkTime;
 
             tdGraph.addTimeDependentEdge(u, v, func);
+            edgeCount++;
         }
-
-        // 6. Add remaining non-stop vertices from the transfer graph if necessary
-        if (inter.transferGraph.numVertices() > numVertices) {
-            for (size_t i = numVertices; i < inter.transferGraph.numVertices(); ++i) {
-                tdGraph.graph.addVertex();
-            }
-        }
+        
+        std::cout << " done (" << edgeCount << " edges created)" << std::endl;
 
         return tdGraph;
     }
