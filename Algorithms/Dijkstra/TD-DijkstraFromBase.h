@@ -117,9 +117,7 @@ public:
         timeStamp++;
         settleCount = 0;
         relaxCount = 0;
-        if constexpr (Debug) {
-            timer.restart();
-        }
+        timer.restart();  // Always restart timer for timing metrics
     }
 
     /**
