@@ -13,7 +13,7 @@ using namespace Shell;
 #include "../../Algorithms/CSA/ULTRACSA.h"
 #include "../../Algorithms/RAPTOR/HLRAPTOR.h"
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
-#include "../../Algorithms/Dijkstra/TimeDependentDijkstra.h"
+#include "../../Algorithms/Dijkstra/TD-DijkstraFromBase.h"
 
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/RAPTOR/RAPTOR.h"
@@ -27,6 +27,50 @@ using namespace Shell;
 #include "../../DataStructures/CSA/Data.h"
 #include "../../DataStructures/RAPTOR/Data.h"
 #include "../../DataStructures/TripBased/Data.h"
+#include "../../DataStructures/Graph/TimeDependentGraph.h"
+#include "../../DataStructures/Intermediate/Data.h"
+
+class BuildTDGraph : public ParameterizedCommand {
+
+public:
+    BuildTDGraph(BasicShell& shell) :
+        ParameterizedCommand(shell, "buildTDGraph", "Builds and serializes a time-dependent graph from intermediate data.") {
+        addParameter("Intermediate input file");
+        addParameter("TD Graph output file");
+    }
+
+    virtual void execute() noexcept {
+        std::cout << "Loading intermediate data..." << std::endl;
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        intermediateData.printInfo();
+        
+        std::cout << "\nBuilding time-dependent graph..." << std::endl;
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
+                  << graph.numEdges() << " edges" << std::endl;
+        
+        const std::string outputFile = getParameter("TD Graph output file");
+        std::cout << "\nSerializing to: " << outputFile << std::endl;
+        graph.serialize(outputFile);
+        std::cout << "Time-dependent graph saved successfully!" << std::endl;
+    }
+};
+
+class TestTDGraphLoad : public ParameterizedCommand {
+
+public:
+    TestTDGraphLoad(BasicShell& shell) :
+        ParameterizedCommand(shell, "testTDGraphLoad", "Test loading a time-dependent graph.") {
+        addParameter("TD Graph input file");
+    }
+
+    virtual void execute() noexcept {
+        std::cout << "Loading time-dependent graph..." << std::endl;
+        TimeDependentGraph graph = TimeDependentGraph::FromBinary(getParameter("TD Graph input file"));
+        std::cout << "Loaded: " << graph.numVertices() << " vertices, " << graph.numEdges() << " edges" << std::endl;
+        std::cout << "Success!" << std::endl;
+    }
+};
 
 class RunTransitiveCSAQueries : public ParameterizedCommand {
 public:
@@ -517,7 +561,7 @@ class RunDijkstraRAPTORQueries : public ParameterizedCommand {
 
 public:
     RunDijkstraRAPTORQueries(BasicShell& shell) :
-        ParameterizedCommand(shell, "runDijkstraRAPTORQueries", "Runs the given number of random Dijkstra RAPTOR queries.") {
+        ParameterizedCommand(shell, "runDijkstraRAPTORQueries", "Runs the given number of random Dijkstra RAPTOR queries (with CH).") {
         addParameter("RAPTOR input file");
         addParameter("CH data");
         addParameter("Number of queries");
@@ -543,13 +587,169 @@ public:
     }
 };
 
+class RunDijkstraRAPTORQueriesNoCH : public ParameterizedCommand {
+
+public:
+    RunDijkstraRAPTORQueriesNoCH(BasicShell& shell) :
+        ParameterizedCommand(shell, "runDijkstraRAPTORQueriesNoCH", "Runs the given number of random Dijkstra RAPTOR queries (without CH).") {
+        addParameter("RAPTOR input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+        
+        std::cout << "Creating reverse network..." << std::endl;
+        RAPTOR::Data reverseRaptorData = raptorData.reverseNetwork();
+        std::cout << "Reverse network created." << std::endl;
+        
+        RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+            algorithm(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(raptorData.transferGraph.numVertices(), n);
+
+        double numJourneys = 0;
+        for (const VertexQuery& query : queries) {
+            algorithm.run(query.source, query.departureTime, query.target);
+            numJourneys += algorithm.getJourneys().size();
+        }
+        algorithm.getProfiler().printStatistics();
+        std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys/n) << std::endl;
+    }
+};
+
+class RunTDDijkstraQueries : public ParameterizedCommand {
+
+public:
+    RunTDDijkstraQueries(BasicShell& shell) :
+        ParameterizedCommand(shell, "runTDDijkstraQueries", "Runs the given number of random TD-Dijkstra queries.") {
+        addParameter("Intermediate input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // Load intermediate data and build time-dependent graph
+        std::cout << "Loading intermediate data and building time-dependent graph..." << std::endl;
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
+                  << graph.numEdges() << " edges" << std::endl;
+
+        // Create the TD-Dijkstra algorithm instance
+        using TDDijkstra = TimeDependentDijkstra<TimeDependentGraph, false>;
+        TDDijkstra algorithm(graph);
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(graph.numVertices(), n);
+
+        // Statistics accumulators
+        size_t totalSettles = 0;
+        size_t totalRelaxes = 0;
+        double totalTime = 0.0;
+        size_t reachableCount = 0;
+        int totalArrivalTime = 0;
+
+        std::cout << "\nRunning " << n << " TD-Dijkstra queries..." << std::endl;
+
+        // Run all queries
+        for (const VertexQuery& query : queries) {
+            algorithm.run(query.source, query.departureTime, query.target);
+            
+            totalSettles += algorithm.getSettleCount();
+            totalRelaxes += algorithm.getRelaxCount();
+            totalTime += algorithm.getElapsedMilliseconds();
+            
+            if (algorithm.reachable(query.target)) {
+                reachableCount++;
+                totalArrivalTime += algorithm.getArrivalTime(query.target);
+            }
+        }
+
+        // Print statistics
+        std::cout << "\n=== TD-Dijkstra Statistics ===" << std::endl;
+        std::cout << "Total queries: " << n << std::endl;
+        std::cout << "Reachable targets: " << reachableCount << " (" 
+                  << String::prettyDouble(100.0 * reachableCount / n) << "%)" << std::endl;
+        std::cout << "\nAverage per query:" << std::endl;
+        std::cout << "  Vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
+        std::cout << "  Edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
+        std::cout << "  Query time: " << String::prettyDouble(totalTime / n) << " ms" << std::endl;
+        
+        if (reachableCount > 0) {
+            std::cout << "  Arrival time (reachable): " 
+                      << String::prettyInt(totalArrivalTime / reachableCount) << std::endl;
+        }
+        
+        std::cout << "\nTotal execution time: " << String::prettyDouble(totalTime) << " ms" << std::endl;
+    }
+};
+
+class RunTDDijkstraQueriesFromBinary : public ParameterizedCommand {
+
+public:
+    RunTDDijkstraQueriesFromBinary(BasicShell& shell) :
+        ParameterizedCommand(shell, "runTDDijkstraQueriesFromBinary", "Runs the given number of random TD-Dijkstra queries (precomputed TD graph).") {
+        addParameter("TD Graph input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // Load precomputed time-dependent graph
+        std::cout << "Loading pre-computed time-dependent graph..." << std::endl;
+        TimeDependentGraph graph = TimeDependentGraph::FromBinary(getParameter("TD Graph input file"));
+        std::cout << "Time-dependent graph loaded: " << graph.numVertices() << " vertices, "
+                  << graph.numEdges() << " edges" << std::endl;
+
+        using TDDijkstra = TimeDependentDijkstra<TimeDependentGraph, false>;
+        TDDijkstra algorithm(graph);
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(graph.numVertices(), n);
+
+        size_t totalSettles = 0;
+        size_t totalRelaxes = 0;
+        double totalTime = 0.0;
+        size_t reachableCount = 0;
+        int totalArrivalTime = 0;
+
+        std::cout << "\nRunning " << n << " TD-Dijkstra queries..." << std::endl;
+        for (const VertexQuery& query : queries) {
+            algorithm.run(query.source, query.departureTime, query.target);
+            totalSettles += algorithm.getSettleCount();
+            totalRelaxes += algorithm.getRelaxCount();
+            totalTime += algorithm.getElapsedMilliseconds();
+            if (algorithm.reachable(query.target)) {
+                reachableCount++;
+                totalArrivalTime += algorithm.getArrivalTime(query.target);
+            }
+        }
+
+        std::cout << "\n=== TD-Dijkstra Statistics ===" << std::endl;
+        std::cout << "Total queries: " << n << std::endl;
+        std::cout << "Reachable targets: " << reachableCount << " ("
+                  << String::prettyDouble(100.0 * reachableCount / n) << "%)" << std::endl;
+        std::cout << "\nAverage per query:" << std::endl;
+        std::cout << "  Vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
+        std::cout << "  Edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
+        std::cout << "  Query time: " << String::prettyDouble(totalTime / n) << " ms" << std::endl;
+        if (reachableCount > 0) {
+            std::cout << "  Arrival time (reachable): "
+                      << String::prettyInt(totalArrivalTime / (int)reachableCount) << std::endl;
+        }
+        std::cout << "\nTotal execution time: " << String::prettyDouble(totalTime) << " ms" << std::endl;
+    }
+};
+
 class CompareMRwithTDDijkstra : public ParameterizedCommand {
 
 public:
     CompareMRwithTDDijkstra(BasicShell& shell) :
-        ParameterizedCommand(shell, "runCheckDijkstraRAPTORPruning", "Runs the given number of random Dijkstra RAPTOR queries.") {
+        ParameterizedCommand(shell, "compareMRwithTDDijkstra", "Compares MR (with CH) with TD-Dijkstra.") {
         addParameter("RAPTOR input file");
-        addParameter("Graph input file");
+        addParameter("Intermediate input file");
         addParameter("CH data");
         addParameter("Number of queries");
     }
@@ -558,7 +758,13 @@ public:
         RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.printInfo();
-        TimeDependentGraph graph = TimeDependentGraph::FromBinary(getParameter("Graph input file"));
+        
+        std::cout << "Building time-dependent graph..." << std::endl;
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
+                  << graph.numEdges() << " edges" << std::endl;
+        
         CH::CH ch(getParameter("CH data"));
 
         const size_t n = getParameter<size_t>("Number of queries");
@@ -578,25 +784,26 @@ public:
         std::cout << "--- Statistics MR ---" << std::endl;
         algorithm_no_pruning.getProfiler().printStatistics();
 
-        // --- Run with Target Pruning enabled ---
-        std::cout << "\n--- Running TD-Dijktra ---" << std::endl;
+        // --- Run TD-Dijkstra ---
+        std::cout << "\n--- Running TD-Dijkstra ---" << std::endl;
 
         using TDDijkstra = TimeDependentDijkstra<TimeDependentGraph, false>;
-        // 2. Instantiate the TimeDependentGraph (assuming it can be created from raptorData)
-        // NOTE: This conversion/instantiation is highly context-specific.
-        // We assume a suitable graph object can be initialized.
+        TDDijkstra algorithm_td(graph);
+
+        size_t totalSettles = 0;
+        size_t totalRelaxes = 0;
 
         for (const VertexQuery& query : queries) {
-            // TD-Dijkstra run pattern: clear, add source (with departure time), then run
-            algorithm_td.clear();
-            algorithm_td.addSource(query.source, query.departureTime);
-            algorithm_td.run(query.target);
-
-            // NOTE: getArrivalTime is the correct accessor for TD-Dijkstra
-            algorithm_pruning.push_back(algorithm_td.getArrivalTime(query.target));
+            algorithm_td.run(query.source, query.departureTime, query.target);
+            results_pruning.push_back(algorithm_td.getArrivalTime(query.target));
+            totalSettles += algorithm_td.getSettleCount();
+            totalRelaxes += algorithm_td.getRelaxCount();
         }
+        
         std::cout << "--- Statistics TD-Dijkstra ---" << std::endl;
-        algorithm_pruning.getProfiler().printStatistics();
+        std::cout << "Total queries: " << n << std::endl;
+        std::cout << "Avg. vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
+        std::cout << "Avg. edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
 
         // --- Compare results ---
         std::cout << "\n--- Comparison Results ---" << std::endl;
@@ -615,6 +822,94 @@ public:
             std::cout << "Target pruning results match non-pruning results. The pruning is correct." << std::endl;
         } else {
             std::cout << "ERROR: Target pruning failed comparison. Results are not identical." << std::endl;
+        }
+    }
+};
+
+class CompareMRwithTDDijkstraNoCH : public ParameterizedCommand {
+
+public:
+    CompareMRwithTDDijkstraNoCH(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareMRwithTDDijkstraNoCH", "Compares MR (without CH) with TD-Dijkstra.") {
+        addParameter("RAPTOR input file");
+        addParameter("Intermediate input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+        
+        std::cout << "Building time-dependent graph..." << std::endl;
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
+                  << graph.numEdges() << " edges" << std::endl;
+        
+        std::cout << "Creating reverse network..." << std::endl;
+        RAPTOR::Data reverseRaptorData = raptorData.reverseNetwork();
+        std::cout << "Reverse network created." << std::endl;
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(raptorData.transferGraph.numVertices(), n);
+
+        std::vector<int> results_mr;
+        std::vector<int> results_td;
+
+        // --- Run MR without CH ---
+        std::cout << "\n--- Running MR (without CH) ---" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+            algorithm_mr(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
+        
+        for (const VertexQuery& query : queries) {
+            algorithm_mr.run(query.source, query.departureTime, query.target);
+            results_mr.push_back(algorithm_mr.getEarliestArrivalTime(query.target));
+        }
+
+        std::cout << "--- Statistics MR (without CH) ---" << std::endl;
+        algorithm_mr.getProfiler().printStatistics();
+
+        // --- Run TD-Dijkstra ---
+        std::cout << "\n--- Running TD-Dijkstra ---" << std::endl;
+
+        using TDDijkstra = TimeDependentDijkstra<TimeDependentGraph, false>;
+        TDDijkstra algorithm_td(graph);
+
+        size_t totalSettles = 0;
+        size_t totalRelaxes = 0;
+
+        for (const VertexQuery& query : queries) {
+            algorithm_td.run(query.source, query.departureTime, query.target);
+            results_td.push_back(algorithm_td.getArrivalTime(query.target));
+            totalSettles += algorithm_td.getSettleCount();
+            totalRelaxes += algorithm_td.getRelaxCount();
+        }
+        
+        std::cout << "--- Statistics TD-Dijkstra ---" << std::endl;
+        std::cout << "Total queries: " << n << std::endl;
+        std::cout << "Avg. vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
+        std::cout << "Avg. edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
+
+        // --- Compare results ---
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        bool results_match = true;
+        size_t mismatchCount = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (results_mr[i] != results_td[i]) {
+                if (mismatchCount < 10) {  // Only print first 10 mismatches
+                    std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i] 
+                              << ", TD-Dijkstra=" << results_td[i] << std::endl;
+                }
+                results_match = false;
+                mismatchCount++;
+            }
+        }
+
+        if (results_match) {
+            std::cout << "✓ All results match! MR and TD-Dijkstra produce identical arrival times." << std::endl;
+        } else {
+            std::cout << "✗ Found " << mismatchCount << " mismatches out of " << n << " queries." << std::endl;
         }
     }
 };
