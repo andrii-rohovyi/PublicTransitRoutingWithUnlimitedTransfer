@@ -20,6 +20,8 @@ int main(int argc, char** argv) {
     new BuildCoreCH(shell);
 
     //Preprocessing
+    new BuildTDGraph(shell);
+    new TestTDGraphLoad(shell);
     new BuildFreeTransferGraph(shell);
     new ComputeStopToStopShortcuts(shell);
     new ComputeMcStopToStopShortcuts(shell);
@@ -40,6 +42,9 @@ int main(int argc, char** argv) {
     new RunULTRACSAQueries(shell);
     new RunTransitiveRAPTORQueries(shell);
     new RunDijkstraRAPTORQueries(shell);
+    new RunDijkstraRAPTORQueriesNoCH(shell);
+    new RunTDDijkstraQueries(shell);
+    new RunTDDijkstraQueriesFromBinary(shell);
     new RunHLRAPTORQueries(shell);
     new RunULTRARAPTORQueries(shell);
     new CheckULTRARAPTORPruning(shell);
@@ -68,6 +73,8 @@ int main(int argc, char** argv) {
     new CheckUBMRAPTORPruning(shell);
     new CheckDijkstraRAPTORPruning(shell);
     new CheckMCRPruning(shell);
+    new CompareMRwithTDDijkstra(shell);
+    new CompareMRwithTDDijkstraNoCH(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);
