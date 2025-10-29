@@ -11,19 +11,15 @@
 // --- CORE INCLUDES ---
 #include "../../Helpers/Types.h"
 #include "../../Helpers/Meta.h"
-#include "../../DataStructures/Attributes/AttributeNames.h" // <-- Contains TravelTimeFunctionIndex
+#include "../../DataStructures/Attributes/AttributeNames.h"
 #include "../../DataStructures/Graph/Classes/DynamicGraph.h"
+#include "../../Helpers/IO/Serialization.h"
 
 // --- CONSTRUCTOR DEPENDENCIES ---
 #include "../../DataStructures/RAPTOR/Data.h"
 // NOTE: Must include Intermediate::Data if FromIntermediate is implemented here.
-// Assuming it's available via an include or alias not shown, e.g.:
-// #include "../Intermediate/Data.h"
-
-// Define never if not already in Types.h
-#ifndef never
-#define never std::numeric_limits<int>::max()
-#endif
+// Intermediate::Data is included where this header is used (Benchmark commands),
+// and Helpers/Types.h already defines the constant 'never'. Avoid redefining it here.
 
 using TransferGraph = ::TransferGraph;
 
@@ -76,6 +72,15 @@ struct ArrivalTimeFunction {
 
         return minArrivalTime;
     }
+
+    // Custom serialization to ensure nested vectors are persisted correctly
+    inline void serialize(IO::Serialization& s) const noexcept {
+        s(discreteTrips, walkTime);
+    }
+
+    inline void deserialize(IO::Deserialization& d) noexcept {
+        d(discreteTrips, walkTime);
+    }
 };
 
 // =========================================================================
@@ -97,7 +102,8 @@ private:
         ::Attribute<Valid, bool>,
         ::Attribute<IncomingEdgePointer, size_t>,
         ::Attribute<ReverseEdge, Edge>,
-        ::Attribute<TravelTimeFunctionIndex, int>
+        // Store the arrival-time function directly on the edge to avoid index mismatches.
+        ::Attribute<Function, ArrivalTimeFunction>
     >;
 
     // FIX: Changed Meta::Attribute to ::Attribute to reference the global definition.
@@ -110,7 +116,6 @@ private:
     using UnderlyingGraph = DynamicGraphImplementation<TDVertexAttributes, TDEdgeAttributes>;
 
     UnderlyingGraph graph;
-    std::vector<ArrivalTimeFunction> functionPool;
 
 public:
     TimeDependentGraph() = default;
@@ -244,11 +249,8 @@ public:
      * @brief Computes the arrival time given the edge and departure time.
      */
     inline int getArrivalTime(const Edge edge, const int departureTime) const noexcept {
-        const int funcIndex = graph.get(TravelTimeFunctionIndex, edge);
-        if (funcIndex == -1 || funcIndex >= (int)functionPool.size()) {
-            return never;
-        }
-        return functionPool[funcIndex].computeArrivalTime(departureTime);
+        const ArrivalTimeFunction& f = graph.get(Function, edge);
+        return f.computeArrivalTime(departureTime);
     }
 
     // --- Public Utility/Manipulation Functions ---
@@ -258,21 +260,14 @@ public:
     }
 
     inline typename UnderlyingGraph::EdgeHandle addTimeDependentEdge(const Vertex from, const Vertex to, const ArrivalTimeFunction& func) {
-        const int funcIndex = functionPool.size();
-        functionPool.emplace_back(func);
-
         typename UnderlyingGraph::EdgeHandle handle = graph.addEdge(from, to);
-
-        handle.set(TravelTimeFunctionIndex, funcIndex);
-
+        handle.set(Function, func);
         return handle;
     }
 
     inline void serialize(const std::string& fileName) const noexcept {
-        // Correctly serialize the two member variables of TimeDependentGraph:
-        // 1. The DynamicGraph (graph)
-        // 2. The function pool (functionPool)
-        IO::serialize(fileName, graph, functionPool);
+        // Persist the underlying dynamic graph (includes per-edge ArrivalTimeFunction attribute)
+        graph.writeBinary(fileName);
     }
 
     /**
@@ -280,7 +275,8 @@ public:
      * * @param fileName The path to the input file.
      */
     inline void deserialize(const std::string& fileName) noexcept {
-        IO::deserialize(fileName, graph, functionPool);
+        // Load the underlying dynamic graph (includes per-edge ArrivalTimeFunction attribute)
+        graph.readBinary(fileName);
     }
 
     /**
