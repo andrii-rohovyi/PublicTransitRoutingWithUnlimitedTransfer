@@ -13,8 +13,8 @@ using namespace Shell;
 #include "../../Algorithms/CSA/ULTRACSA.h"
 #include "../../Algorithms/RAPTOR/HLRAPTOR.h"
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
-#include "../../Algorithms/Dijkstra/TD-DijkstraFromBase.h"
 #include "../../Algorithms/Dijkstra/TimeDependentDijkstra.h"
+#include "../../Algorithms/Dijkstra/TD-DijkstraStateful.h"
 
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/RAPTOR/RAPTOR.h"
@@ -640,7 +640,7 @@ public:
                   << graph.numEdges() << " edges" << std::endl;
 
         // Create the TD-Dijkstra algorithm instance
-        using TDDijkstra = TimeDependentDijkstra<TimeDependentGraph, false>;
+        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
         TDDijkstra algorithm(graph);
 
         const size_t n = getParameter<size_t>("Number of queries");
@@ -772,7 +772,7 @@ public:
         std::cout << "Time-dependent graph loaded: " << graph.numVertices() << " vertices, "
                   << graph.numEdges() << " edges" << std::endl;
 
-        using TDDijkstra = TimeDependentDijkstra<TimeDependentGraph, false>;
+        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
         TDDijkstra algorithm(graph);
 
         const size_t n = getParameter<size_t>("Number of queries");
@@ -895,11 +895,11 @@ public:
     }
 };
 
-class CompareMRwithTDDijkstraNoCH : public ParameterizedCommand {
+class CompareMRwithTDStatefulNoCH : public ParameterizedCommand {
 
 public:
-    CompareMRwithTDDijkstraNoCH(BasicShell& shell) :
-        ParameterizedCommand(shell, "compareMRwithTDDijkstraNoCH", "Compares MR (without CH) with TD-Dijkstra.") {
+    CompareMRwithTDStatefulNoCH(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareMRwithTDStatefulNoCH", "Compares MR (without CH) with TD-Dijkstra (stateful buffers on transfers only).") {
         addParameter("RAPTOR input file");
         addParameter("Intermediate input file");
         addParameter("Number of queries");
@@ -931,31 +931,46 @@ public:
         RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
             algorithm_mr(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
         
-        for (const VertexQuery& query : queries) {
+        Timer mrTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
             algorithm_mr.run(query.source, query.departureTime, query.target);
             results_mr.push_back(algorithm_mr.getEarliestArrivalTime(query.target));
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  MR: " << (i + 1) << "/" << n << " queries (" 
+                          << String::msToString(mrTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
         }
+        std::cout << std::endl;
 
         std::cout << "--- Statistics MR (without CH) ---" << std::endl;
         algorithm_mr.getProfiler().printStatistics();
 
-        // --- Run TD-Dijkstra ---
-        std::cout << "\n--- Running TD-Dijkstra ---" << std::endl;
+        // --- Run TD-Dijkstra (stateful) ---
+        std::cout << "\n--- Running TD-Dijkstra (stateful) ---" << std::endl;
 
-        using TDDijkstra = TimeDependentDijkstra<TimeDependentGraph, false>;
-        TDDijkstra algorithm_td(graph);
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
+        // Pass number of stops so TD-Dijkstra only boards from stops (like MR)
+        TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops());
 
         size_t totalSettles = 0;
         size_t totalRelaxes = 0;
 
-        for (const VertexQuery& query : queries) {
+        Timer tdTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
             algorithm_td.run(query.source, query.departureTime, query.target);
             results_td.push_back(algorithm_td.getArrivalTime(query.target));
             totalSettles += algorithm_td.getSettleCount();
             totalRelaxes += algorithm_td.getRelaxCount();
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries (" 
+                          << String::msToString(tdTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
         }
+        std::cout << std::endl;
         
-        std::cout << "--- Statistics TD-Dijkstra ---" << std::endl;
+        std::cout << "--- Statistics TD-Dijkstra (stateful) ---" << std::endl;
         std::cout << "Total queries: " << n << std::endl;
         std::cout << "Avg. vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
         std::cout << "Avg. edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
@@ -964,21 +979,38 @@ public:
         std::cout << "\n--- Comparison Results ---" << std::endl;
         bool results_match = true;
         size_t mismatchCount = 0;
+        size_t pureWalkingMismatchCount = 0;
+        size_t transitMismatchCount = 0;
+        std::vector<size_t> mismatchIndices;
         for (size_t i = 0; i < n; ++i) {
             if (results_mr[i] != results_td[i]) {
+                // Check if this is a pure walking query (no transit used)
+                // A pure walking query has arrival time = departure time + walk distance
+                const int walkTime = results_td[i] - queries[i].departureTime;
+                const bool isPureWalking = (results_mr[i] - queries[i].departureTime == walkTime + (results_mr[i] - results_td[i]));
+                
                 if (mismatchCount < 10) {  // Only print first 10 mismatches
                     std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i] 
-                              << ", TD-Dijkstra=" << results_td[i] << std::endl;
+                              << ", TD-Dijkstra=" << results_td[i] 
+                              << " (diff: " << (results_mr[i] - results_td[i]) << "s)"
+                              << std::endl;
                 }
                 results_match = false;
                 mismatchCount++;
+                mismatchIndices.push_back(i);
             }
         }
 
         if (results_match) {
-            std::cout << "✓ All results match! MR and TD-Dijkstra produce identical arrival times." << std::endl;
+            std::cout << "✓ All results match! MR and TD-Dijkstra (stateful) produce identical arrival times." << std::endl;
         } else {
             std::cout << "✗ Found " << mismatchCount << " mismatches out of " << n << " queries." << std::endl;
+            std::cout << "\nAll mismatched query indices: ";
+            for (size_t i = 0; i < mismatchIndices.size(); ++i) {
+                std::cout << mismatchIndices[i];
+                if (i < mismatchIndices.size() - 1) std::cout << ", ";
+            }
+            std::cout << std::endl;
         }
     }
 };

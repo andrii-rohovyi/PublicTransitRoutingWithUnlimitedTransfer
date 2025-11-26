@@ -75,7 +75,7 @@ int main(int argc, char** argv) {
     new CheckDijkstraRAPTORPruning(shell);
     new CheckMCRPruning(shell);
     new CompareMRwithTDDijkstra(shell);
-    new CompareMRwithTDDijkstraNoCH(shell);
+    new CompareMRwithTDStatefulNoCH(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);
