@@ -32,18 +32,6 @@ inline std::vector<VertexQuery> generateRandomVertexQueries(const size_t numVert
     return queries;
 }
 
-// Generate vertex queries restricted to stops (vertices 0 to numStops-1)
-inline std::vector<VertexQuery> generateRandomVertexQueriesForStops(const size_t numStops, const size_t numQueries, const int startTime = 0, const int endTime = 24 * 60 * 60) noexcept {
-    std::mt19937 randomGenerator(42);
-    std::uniform_int_distribution<> stopDistribution(0, numStops - 1);
-    std::uniform_int_distribution<> timeDistribution(startTime, endTime - 1);
-    std::vector<VertexQuery> queries;
-    for (size_t i = 0; i < numQueries; i++) {
-        queries.emplace_back(Vertex(stopDistribution(randomGenerator)), Vertex(stopDistribution(randomGenerator)), timeDistribution(randomGenerator));
-    }
-    return queries;
-}
-
 struct OneToAllQuery {
     OneToAllQuery(const Vertex source = noVertex, const int departureTime = never) :
         source(source),
