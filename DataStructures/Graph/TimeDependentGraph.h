@@ -49,6 +49,21 @@ struct DiscreteTrip {
 struct ArrivalTimeFunction {
     std::vector<DiscreteTrip> discreteTrips;
     int walkTime = never; // Initialize walkTime to a large value
+    // Suffix minimum of arrival times over discreteTrips sorted by departureTime.
+    // suffixMinArrival[i] = min_{j >= i} discreteTrips[j].arrivalTime
+    std::vector<int> suffixMinArrival;
+
+    inline void finalize() noexcept {
+        // Ensure discreteTrips are sorted by departure time before computing suffix mins
+        std::sort(discreteTrips.begin(), discreteTrips.end());
+        suffixMinArrival.resize(discreteTrips.size());
+        if (!discreteTrips.empty()) {
+            suffixMinArrival.back() = discreteTrips.back().arrivalTime;
+            for (int i = int(discreteTrips.size()) - 2; i >= 0; --i) {
+                suffixMinArrival[i] = std::min(discreteTrips[i].arrivalTime, suffixMinArrival[i + 1]);
+            }
+        }
+    }
 
     inline int computeArrivalTime(const int departureTime) const noexcept {
         int minArrivalTime = never;
@@ -61,7 +76,10 @@ struct ArrivalTimeFunction {
             });
 
         if (it != discreteTrips.end()) {
-            minArrivalTime = it->arrivalTime;
+            const size_t idx = size_t(it - discreteTrips.begin());
+            // Use suffix minimum to get the best (earliest) arrival among all eligible trips
+            if (!suffixMinArrival.empty()) minArrivalTime = suffixMinArrival[idx];
+            else minArrivalTime = it->arrivalTime; // Fallback (shouldn't happen if finalize() was called)
         }
 
         // 2. Check for the static walk/transfer
@@ -73,13 +91,60 @@ struct ArrivalTimeFunction {
         return minArrivalTime;
     }
 
+    // Compute arrival time when a boarding buffer is required before boarding a scheduled trip.
+    // The buffer applies ONLY to discrete trips (boarding vehicles), not to walking transfers.
+    inline int computeArrivalTimeWithBoardBuffer(const int departureTime, const int boardBuffer) const noexcept {
+        int minArrivalTime = never;
+
+        // 1) Scheduled trips: must depart at or after (departureTime + boardBuffer)
+        const int threshold = (boardBuffer > 0) ? (departureTime + boardBuffer) : departureTime;
+        auto it = std::lower_bound(discreteTrips.begin(), discreteTrips.end(), threshold,
+            [](const DiscreteTrip& trip, int time) {
+                return trip.departureTime < time;
+            });
+        if (it != discreteTrips.end()) {
+            const size_t idx = size_t(it - discreteTrips.begin());
+            if (!suffixMinArrival.empty()) minArrivalTime = suffixMinArrival[idx];
+            else minArrivalTime = it->arrivalTime;
+        }
+
+        // 2) Walking: no boarding buffer applies
+        if (walkTime != never) {
+            const int currentWalkTime = departureTime + walkTime;
+            minArrivalTime = std::min(minArrivalTime, currentWalkTime);
+        }
+
+        return minArrivalTime;
+    }
+
+    // Return earliest arrival among discrete trips departing at or after 'threshold'.
+    inline int computeDiscreteArrivalFrom(const int threshold) const noexcept {
+        if (discreteTrips.empty()) return never;
+        auto it = std::lower_bound(discreteTrips.begin(), discreteTrips.end(), threshold,
+            [](const DiscreteTrip& trip, int time) {
+                return trip.departureTime < time;
+            });
+        if (it == discreteTrips.end()) return never;
+        const size_t idx = size_t(it - discreteTrips.begin());
+        if (!suffixMinArrival.empty()) return suffixMinArrival[idx];
+        return it->arrivalTime;
+    }
+
+    // Return arrival time for walking from departureTime; never if walk is not available.
+    inline int computeWalkArrivalFrom(const int departureTime) const noexcept {
+        if (walkTime == never) return never;
+        return departureTime + walkTime;
+    }
+
     // Custom serialization to ensure nested vectors are persisted correctly
     inline void serialize(IO::Serialization& s) const noexcept {
-        s(discreteTrips, walkTime);
+        s(discreteTrips, walkTime, suffixMinArrival);
     }
 
     inline void deserialize(IO::Deserialization& d) noexcept {
-        d(discreteTrips, walkTime);
+        d(discreteTrips, walkTime, suffixMinArrival);
+        // Backward compatibility: if suffixMinArrival missing (older binaries), rebuild it.
+        if (suffixMinArrival.size() != discreteTrips.size()) finalize();
     }
 };
 
@@ -116,6 +181,9 @@ private:
     using UnderlyingGraph = DynamicGraphImplementation<TDVertexAttributes, TDEdgeAttributes>;
 
     UnderlyingGraph graph;
+    // Per-vertex minimum transfer time (change time) used as implicit departure buffer when boarding trips.
+    // Initialized from Intermediate::Data::stops; defaults to 0 for non-stop vertices.
+    std::vector<int> minTransferTimeByVertex;
 
 public:
     TimeDependentGraph() = default;
@@ -134,6 +202,12 @@ public:
             tdGraph.graph.addVertex();
         }
 
+        // Initialize per-vertex min transfer times from Intermediate stops if available
+        tdGraph.minTransferTimeByVertex.assign(numVertices, 0);
+        for (size_t s = 0; s < std::min(numStops, numVertices); ++s) {
+            tdGraph.minTransferTimeByVertex[s] = inter.stops[s].minTransferTime;
+        }
+
         // 2. Collect Discrete Trips more efficiently using unordered_map with custom hash
         std::unordered_map<std::pair<Vertex, Vertex>, std::vector<DiscreteTrip>, VertexPairHash> tripSegments;
         tripSegments.reserve(inter.trips.size() * 10); // Pre-allocate to reduce rehashing
@@ -147,6 +221,8 @@ public:
                 const Vertex u = Vertex(stopEventU.stopId);
                 const Vertex v = Vertex(stopEventV.stopId);
 
+                // Use original departure times from intermediate data.
+                // The TD-Dijkstra will apply the buffer when boarding.
                 tripSegments[{u, v}].emplace_back(DiscreteTrip{
                     .departureTime = stopEventU.departureTime,
                     .arrivalTime = stopEventV.arrivalTime
@@ -199,8 +275,8 @@ public:
             // Create and add the ArrivalTimeFunction (ATF)
             ArrivalTimeFunction func;
             func.discreteTrips = std::move(trips);
-            std::sort(func.discreteTrips.begin(), func.discreteTrips.end());
             func.walkTime = walkTime;
+            func.finalize();
 
             tdGraph.addTimeDependentEdge(u, v, func);
             edgeCount++;
@@ -215,6 +291,7 @@ public:
             // Create a function with an empty trip list and only the walk time
             ArrivalTimeFunction func;
             func.walkTime = walkTime;
+            func.finalize();
 
             tdGraph.addTimeDependentEdge(u, v, func);
             edgeCount++;
@@ -250,7 +327,26 @@ public:
      */
     inline int getArrivalTime(const Edge edge, const int departureTime) const noexcept {
         const ArrivalTimeFunction& f = graph.get(Function, edge);
+        // Do NOT apply a generic per-stop boarding buffer here, as that would incorrectly penalize
+        // continuing on the same vehicle across consecutive stops. Buffer semantics are handled in MR by
+        // implicit departure times and require stateful modeling to apply only on transfers. For TD-Dijkstra
+        // (single-label), we use the pure arrival-time function without buffer to avoid over-constraining.
         return f.computeArrivalTime(departureTime);
+    }
+
+    // Stateful evaluation utilities
+    inline int getDiscreteArrivalFromThreshold(const Edge edge, const int threshold) const noexcept {
+        const ArrivalTimeFunction& f = graph.get(Function, edge);
+        return f.computeDiscreteArrivalFrom(threshold);
+    }
+
+    inline int getWalkArrivalFrom(const Edge edge, const int departureTime) const noexcept {
+        const ArrivalTimeFunction& f = graph.get(Function, edge);
+        return f.computeWalkArrivalFrom(departureTime);
+    }
+
+    inline int getMinTransferTimeAt(const Vertex u) const noexcept {
+        return (size_t(u) < minTransferTimeByVertex.size()) ? minTransferTimeByVertex[u] : 0;
     }
 
     // --- Public Utility/Manipulation Functions ---
