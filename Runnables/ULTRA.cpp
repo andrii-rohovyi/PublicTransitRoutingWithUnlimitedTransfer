@@ -4,6 +4,7 @@
 #include "Commands/BenchmarkULTRA.h"
 #include "Commands/BenchmarkMcULTRA.h"
 #include "Commands/BenchmarkMultimodal.h"
+#include "Commands/DebugQuery.h"
 
 #include "../Helpers/Console/CommandLineParser.h"
 #include "../Helpers/MultiThreading.h"
@@ -76,6 +77,7 @@ int main(int argc, char** argv) {
     new CheckMCRPruning(shell);
     new CompareMRwithTDDijkstra(shell);
     new CompareMRwithTDStatefulNoCH(shell);
+    new DebugSingleQuery(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);
