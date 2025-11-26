@@ -24,7 +24,7 @@ namespace Shell {
 
 const std::string newLine = "\n\r";
 
-inline char getch() {
+inline int getch() {
     char buf = 0;
     termios old{};
     const bool isTTY = ::isatty(0);
@@ -37,10 +37,12 @@ inline char getch() {
         raw.c_cc[VTIME] = 0;
         if (tcsetattr(0, TCSANOW, &raw) < 0) perror("tcsetattr ICANON");
     }
-    if (read(0, &buf, 1) < 0) perror ("read()");
+    ssize_t n = read(0, &buf, 1);
+    if (n < 0) perror ("read()");
     if (isTTY) {
         if (tcsetattr(0, TCSADRAIN, &old) < 0) perror ("tcsetattr ~ICANON");
     }
+    if (n <= 0) return -1;
     return buf;
 }
 
@@ -86,7 +88,12 @@ public:
 
     inline char readChar(const bool isPrompt) {
         while (true) {
-            uint64_t c = getch();
+            int c_int = getch();
+            if (c_int == -1) {
+                running = false;
+                return '\n';
+            }
+            uint64_t c = c_int;
             if ((c >= 32 && c <= 126) || (c >= 128 && c <= 254)) { // Displayable character
                 return (char)c;
             } else if (c == '\n') { // New line
