@@ -136,7 +136,7 @@ public:
         algo_pruning.getProfiler().printStatistics();
 
         // Compare
-        bool pruning_correct = true;
+    bool pruning_correct = true;
         for (size_t i = 0; i < n; ++i) {
             std::vector<RAPTOR::WalkingParetoLabel> no_pruning_results = results_no_pruning[i];
             std::vector<RAPTOR::WalkingParetoLabel> pruning_results = results_pruning[i];
@@ -164,6 +164,12 @@ public:
                     std::cout << "No-pruning: (arrival=" << no_pruning_results[j].arrivalTime << ", walk=" << no_pruning_results[j].walkingDistance << ")" << std::endl;
                     }
             }
+        }
+
+        if (pruning_correct) {
+            std::cout << "Pruning correctness check passed: identical results." << std::endl;
+        } else {
+            std::cout << "Pruning correctness check failed: mismatches detected." << std::endl;
         }
     }
 };
