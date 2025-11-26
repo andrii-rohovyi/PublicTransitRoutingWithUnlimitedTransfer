@@ -4,8 +4,9 @@
 #include <vector>
 #include <string>
 #include <set>
-#include <algorithm>
-#include <concepts>
+
+#include "../CH/CH.h"
+#include "../RAPTOR/InitialTransfers.h"
 
 #include "../../Helpers/Types.h"
 #include "../../Helpers/Timer.h"
@@ -13,185 +14,371 @@
 #include "../../Helpers/Vector/Vector.h"
 
 #include "../../DataStructures/Container/ExternalKHeap.h"
-#include "../../DataStructures/Container/IndexedSet.h"
 #include "../../DataStructures/Attributes/AttributeNames.h"
-#include "../../DataStructures/Graph/TimeDependentGraph.h"
 
-// Note: Ensure the necessary header for INITIAL_TRANSFERS (e.g., InitialTransfers.h) is included
-
-// New template: added INITIAL_TRANSFERS type
-template<typename GRAPH, typename INITIAL_TRANSFERS, bool DEBUG = false>
-class CHTimeDependentDijkstra {
+/**
+ * @brief An implementation of a time-dependent Dijkstra's algorithm.
+ *
+ * @details This class finds the earliest arrival time from a source vertex
+ * given a specific departure time. It is adapted from a static Dijkstra's
+ * implementation and uses the project's existing TimeDependentGraph structure.
+ *
+ * @tparam GRAPH The type of the graph, expected to be a TimeDependentGraph.
+ * @tparam DEBUG A compile-time boolean flag for performance metrics.
+*/
+template<typename GRAPH, bool DEBUG = false>
+class TimeDependentDijkstraFull {
 
 public:
     using Graph = GRAPH;
-    using InitialTransferType = INITIAL_TRANSFERS;
     static constexpr bool Debug = DEBUG;
-    // Renamed Type alias for the combined class
-    using Type = CHTimeDependentDijkstra<Graph, InitialTransferType, Debug>;
+    using Type = TimeDependentDijkstraFull<Graph, Debug>;
 
 public:
-    // VertexLabel structure remains the same
+    /**
+     * @brief A label for each vertex, tracking arrival time and parent.
+     * @details The 'distance' field from the static version has been renamed to
+     * 'arrivalTime' to better reflect its purpose in a time-dependent context.
+     * The priority queue will use this value to find the next vertex to settle.
+     */
     struct VertexLabel : public ExternalKHeapElement {
-        VertexLabel() : ExternalKHeapElement(), distance(intMax), parent(noVertex), timeStamp(-1) {}
+        VertexLabel() : ExternalKHeapElement(), arrivalTime(intMax), parent(noVertex), timeStamp(-1) {}
+
         inline void reset(int time) {
-            distance = intMax;
+            arrivalTime = intMax;
             parent = noVertex;
             timeStamp = time;
         }
+
+        // The comparison function prioritizes the earliest arrival time
         inline bool hasSmallerKey(const VertexLabel* other) const noexcept {
-            return distance < other->distance;
+            return arrivalTime < other->arrivalTime;
         }
 
-        int distance; // Stores the earliest arrival time (EAT)
+        int arrivalTime;
         Vertex parent;
         int timeStamp;
     };
 
 public:
-    // 1. Core Constructor (takes both the TD graph and the CH structure)
-    CHTimeDependentDijkstra(const GRAPH& graph, const INITIAL_TRANSFERS& initialTransfers) :
+    /**
+     * @brief Main constructor for the TimeDependentDijkstra class.
+     * @details This constructor no longer takes a static weight vector. Instead, it
+     * directly takes a reference to the time-dependent graph, which contains the
+     * arrival time functions for each edge.
+     * @param graph A constant reference to the TimeDependentGraph object.
+     */
+    TimeDependentDijkstraFull(const GRAPH& graph, const CH::CH& chData) :
         graph(graph),
-        initialTransfers(initialTransfers), // New member initialization
+		initialTransfers(chData, FORWARD, graph.numVertices()),
         Q(graph.numVertices()),
         label(graph.numVertices()),
         timeStamp(0),
-        settleCount(0) {
+        settleCount(0),
+        relaxCount(0) {
     }
 
-    // --- Deleted Constructors (Kept for completeness, ensuring no fixed weights are used) ---
-
-    // Delete all constructors that take a fixed weight vector
-    CHTimeDependentDijkstra(const GRAPH& graph) = delete;
-    CHTimeDependentDijkstra(const GRAPH& graph, const std::vector<int>& weight) = delete;
-    CHTimeDependentDijkstra(const GRAPH&&, const std::vector<int>&) = delete;
-    CHTimeDependentDijkstra(const GRAPH&, const std::vector<int>&&) = delete;
-    CHTimeDependentDijkstra(const GRAPH&&) = delete;
-
-    // Delete constructors using AttributeNameWrapper
-    template<AttributeNameType ATTRIBUTE_NAME>
-    CHTimeDependentDijkstra(const GRAPH& graph, const ::AttributeNameWrapper<ATTRIBUTE_NAME> weight) = delete;
-    template<AttributeNameType ATTRIBUTE_NAME>
-    CHTimeDependentDijkstra(const GRAPH&&, const ::AttributeNameWrapper<ATTRIBUTE_NAME>) = delete;
+    // --- Deleted Constructors from static version are kept for safety ---
+    TimeDependentDijkstraFull(const GRAPH&&) = delete;
 
     // --- Public run methods ---
 
     /**
-     * @brief Performs initial CH transfers and then runs TD-Dijkstra from reachable stops.
+     * @brief Main entry point to run the algorithm.
      * @param source The starting vertex.
-     * @param departureTime The time of departure from the source.
-     * @param target The target vertex.
+     * @param departureTime The time at which the journey begins.
+     * @param target The optional target vertex (default: noVertex for one-to-all).
      */
-
     template<typename SETTLE = NO_OPERATION, typename STOP = NO_OPERATION, typename PRUNE_EDGE = NO_OPERATION>
     inline void run(const Vertex source, const int departureTime, const Vertex target = noVertex, const SETTLE& settle = NoOperation, const STOP& stop = NoOperation, const PRUNE_EDGE& pruneEdge = NoOperation) noexcept {
         clear();
-
-        // Step 1: Run static Initial Transfers (CH) from the source to all Stops/POIs.
-        // Assumes INITIAL_TRANSFERS::run() signature from DijkstraRAPTOR is available.
-        // NOTE: If target is a stop, the initial transfer can also provide the final EAT.
-        initialTransfers.run(source, target);
-
-        // Step 2: Add all stops reachable by the initial transfer as TD-Dijkstra sources.
-        // This is the "initialization" step that starts the time-dependent search.
-        for (const Vertex stop : initialTransfers.getForwardPOIs()) {
-            const int arrivalTime = departureTime + initialTransfers.getForwardDistance(stop);
-            if (arrivalTime < intMax) {
-                // Initial arrival time at a stop/POI from the source via CH is the new source departure time for TD-Dijkstra.
-                addSource(stop, arrivalTime);
-            }
-        }
-
-        // Step 3: Run the core TD-Dijkstra relaxation from all initialized sources.
+        addSource(source, departureTime);
+        relaxInitialTransfers();
         runRelaxation(target, settle, stop, pruneEdge);
     }
 
-    // Legacy single-source run is now internal or renamed to avoid confusion
-    template<typename SETTLE = NO_OPERATION, typename STOP = NO_OPERATION, typename PRUNE_EDGE = NO_OPERATION>
-    inline void run(const Vertex source, const Vertex target = noVertex, const SETTLE& settle = NoOperation, const STOP& stop = NoOperation, const PRUNE_EDGE& pruneEdge = NoOperation) noexcept {
-        // This method needs an initial time, so let's enforce using the three-parameter run()
-        // OR define it to use a default departure time of 0
-        run(source, 0, target, settle, stop, pruneEdge);
+    inline void relaxInitialTransfers() noexcept {
+        initialTransfers.run(source, targetVertex);
+        for (const Vertex stop : initialTransfers.getForwardPOIs()) {
+            Assert(data.isStop(stop), "Reached POI " << stop << " is not a stop!");
+            Assert(initialTransfers.getForwardDistance(stop) != INFTY, "Vertex " << stop << " was not reached!");
+            const int newArrivalTime = departureTime + initialTransfers.getForwardDistance(stop);
+            arrivalByTransfer(StopId(stop), newArrivalTime, source);
+        }
+        if (initialTransfers.getDistance() != INFTY) {
+            const int newArrivalTime = departureTime + initialTransfers.getDistance();
+            arrivalByTransfer(targetStop, newArrivalTime, source);
+        }
     }
 
-    // Other run overloads (simplified to call the main run or deleted for brevity)
+    inline void arrivalByTransfer(const StopId stop, const int arrivalTime, const Vertex parent) noexcept {
+        Assert(data.isStop(stop) || stop == targetStop, "Stop " << stop << " is out of range!");
+        Assert(arrivalTime >= sourceDepartureTime, "Arriving by route BEFORE departing from the source (source departure time: " << String::secToTime(sourceDepartureTime) << " [" << sourceDepartureTime << "], arrival time: " << String::secToTime(arrivalTime) << " [" << arrivalTime << "])!");
+        VertexLabel& vlabel = getLabel(stop);
+        if (vlabel.arrivalTime <= arrivalTime) return;
+        vlabel.arrivalTime = arrivalTime;
+        vlabel.parent = parent;
+        Q.update(&vlabel);
+    }
+
+    /**
+     * @brief Batch query helper - runs multiple queries efficiently.
+     * @param queries Container of VertexQuery objects (must have source, departureTime, target fields)
+     * @return Vector of arrival times for each query
+     */
+    template<typename QUERY_CONTAINER>
+    inline std::vector<int> runQueries(const QUERY_CONTAINER& queries) noexcept {
+        std::vector<int> results;
+        results.reserve(queries.size());
+
+        for (const auto& query : queries) {
+            run(query.source, query.departureTime, query.target);
+            results.push_back(getArrivalTime(query.target));
+        }
+
+        return results;
+    }
+
 
     inline void clear() noexcept {
-        if constexpr (Debug) {
-            timer.restart();
-            settleCount = 0;
-        }
         Q.clear();
         timeStamp++;
+        settleCount = 0;
+        relaxCount = 0;
+        timer.restart();  // Always restart timer for timing metrics
     }
 
-    // 'distance' is now the initial departure time (EAT from a preceding transfer)
-    inline void addSource(const Vertex source, const int distance) noexcept {
+    /**
+     * @brief Initializes the source vertex with a specific departure time.
+     * @param source The source vertex.
+     * @param time The departure time, which is the initial arrival time at the source.
+     */
+    inline void addSource(const Vertex source, const int time) noexcept {
         VertexLabel& sourceLabel = getLabel(source);
-        sourceLabel.distance = distance;
+        sourceLabel.arrivalTime = time;
         Q.update(&sourceLabel);
     }
 
-    // --- Core TD-Dijkstra Relaxation Logic (renamed and corrected) ---
+
+    // --- Core TD-Dijkstra Relaxation Logic ---
+
+    /**
+     * @brief The main algorithm loop where relaxation occurs.
+     * @details This is the workhorse of the algorithm. The key change is that it
+     * no longer adds a static weight. Instead, it uses the arrival time at the
+     * current vertex 'u' as the departure time to query the edge's arrival time function.
+     */
     template<typename SETTLE, typename STOP = NO_OPERATION, typename PRUNE_EDGE = NO_OPERATION, typename = decltype(std::declval<SETTLE>()(std::declval<Vertex>()))>
     inline void runRelaxation(const Vertex target, const SETTLE& settle, const STOP& stop = NoOperation, const PRUNE_EDGE& pruneEdge = NoOperation) noexcept {
+        if constexpr (Debug) {
+            std::cout << "Starting TD-Dijkstra relaxation..." << std::endl;
+            std::cout << "  Target: " << (target == noVertex ? -1 : target) << std::endl;
+        }
+
         while(!Q.empty()) {
-            if (stop()) break;
+            if (stop()) {
+                if constexpr (Debug) std::cout << "  Stopped by stop condition" << std::endl;
+                break;
+            }
+
             const VertexLabel* uLabel = Q.extractFront();
             const Vertex u = Vertex(uLabel - &(label[0]));
-            if (u == target) break;
 
-            // The arrival time at u (uLabel->distance) is the departure time for all outgoing edges.
-            const int departureTime = uLabel->distance;
+            settleCount++;
+
+            if constexpr (Debug) {
+                std::cout << "  Settling vertex " << u
+                          << " at time " << uLabel->arrivalTime
+                          << " (settle #" << settleCount << ")" << std::endl;
+                settle(u);
+            }
+
+            if (u == target) {
+                if constexpr (Debug) std::cout << "  Reached target!" << std::endl;
+                break;
+            }
+
+            // The arrival time at u is the departure time for all outgoing edges.
+            const int departureTime = uLabel->arrivalTime;
 
             for (const Edge edge : graph.edgesFrom(u)) {
-                const Vertex v = graph.get(ToVertex, edge);
-                VertexLabel& vLabel = getLabel(v);
                 if (pruneEdge(u, edge)) continue;
 
-                // 1. TD-Dijkstra Step: Look up the earliest arrival time (EAT) at v.
-                // NOTE: TimeDependentGraph::getArrivalTime returns the final ARRIVAL time!
+                relaxCount++;  // Count every relaxation attempt
+
+                const Vertex v = graph.get(ToVertex, edge);
+                VertexLabel& vLabel = getLabel(v);
+
+                // CORE CHANGE: Use the graph's time-dependent query
                 const int newArrivalTime = graph.getArrivalTime(edge, departureTime);
 
-                // Check for unreachable (time = never)
+                // Check for unreachable connections
                 if (newArrivalTime == intMax) continue;
 
-                // 2. Relaxation: Update if a better arrival time is found.
-                if (vLabel.distance > newArrivalTime) {
-                    vLabel.distance = newArrivalTime;
+                // Standard relaxation check
+                if (vLabel.arrivalTime > newArrivalTime) {
+                    if constexpr (Debug) {
+                        std::cout << "    Relaxing edge " << u << " -> " << v
+                                  << ": " << vLabel.arrivalTime << " -> " << newArrivalTime << std::endl;
+                    }
+                    vLabel.arrivalTime = newArrivalTime;
                     vLabel.parent = u;
                     Q.update(&vLabel);
                 }
             }
-            settle(u);
-            if constexpr (Debug) settleCount++;
         }
-        // ... (Debug output remains the same) ...
+
+        if constexpr (Debug) {
+            std::cout << "TD-Dijkstra completed:" << std::endl;
+            std::cout << "  Settled Vertices = " << String::prettyInt(settleCount) << std::endl;
+            std::cout << "  Relaxed Edges = " << String::prettyInt(relaxCount) << std::endl;
+            std::cout << "  Time = " << String::msToString(timer.elapsedMilliseconds()) << std::endl;
+        }
     }
 
-    // --- Accessor methods (remain largely unchanged) ---
-
-    inline bool reachable(const Vertex vertex) const noexcept {
-        // Also check if the target was reached by the initial CH transfer
-        if (label[vertex].timeStamp == timeStamp) return true;
-        // Check initial transfer distance if the target is reachable by it
-        return initialTransfers.getBackwardDistance(vertex) != intMax;
-    }
+    // --- Accessor methods ---
+    // (Most remain the same, but 'getDistance' is renamed for clarity)
 
     inline bool visited(const Vertex vertex) const noexcept {
         return label[vertex].timeStamp == timeStamp;
     }
 
-    inline int getEarliestArrivalTime(const Vertex vertex) const noexcept {
-        // Get the best time: either from TD-Dijkstra or the initial CH transfer
-        const int tdResult = (visited(vertex)) ? label[vertex].distance : intMax;
-        const int chResult = initialTransfers.getDistance(vertex); // Assuming a method to get S-T distance
-
-        return std::min(tdResult, chResult);
+    inline bool reachable(const Vertex vertex) const noexcept {
+        return visited(vertex);
     }
 
-    // ... (other accessors remain the same) ...
+    inline int getEarliestArrivalTime(const Vertex vertex) const noexcept {
+        if (visited(vertex)) return label[vertex].arrivalTime;
+        return intMax;  // Return intMax instead of -1 for unreachable vertices (more consistent)
+    }
 
+    // Alias methods for compatibility with different calling conventions
+    inline int getArrivalTime(const Vertex vertex) const noexcept {
+        return getEarliestArrivalTime(vertex);
+    }
+
+    inline int getDistance(const Vertex vertex) const noexcept {
+        return getEarliestArrivalTime(vertex);
+    }
+
+    inline Vertex getParent(const Vertex vertex) const noexcept {
+        if (visited(vertex)) return label[vertex].parent;
+        return noVertex;
+    }
+
+    inline std::set<Vertex> getChildren(const Vertex vertex) const noexcept {
+        if (visited(vertex)) {
+            std::set<Vertex> children;
+            for (const Edge edge : graph.edgesFrom(vertex)) {
+                const Vertex child = graph.get(ToVertex, edge);
+                if (visited(child) && label[child].parent == vertex) {
+                    children.insert(child);
+                }
+            }
+            return children;
+        }
+        return std::set<Vertex>();
+    }
+
+    inline Vertex getQFront() const noexcept {
+        if (Q.empty()) return noVertex;
+        return Vertex(Q.front() - &(label[0]));
+    }
+
+    inline std::vector<Vertex> getReversePath(const Vertex to) const noexcept {
+        std::vector<Vertex> path;
+        if (!visited(to)) return path;
+        path.push_back(to);
+        while (label[path.back()].parent != noVertex) {
+            path.push_back(label[path.back()].parent);
+        }
+        return path;
+    }
+
+    inline std::vector<Vertex> getPath(const Vertex to) const noexcept {
+        return Vector::reverse(getReversePath(to));
+    }
+
+    inline int getSettleCount() const noexcept {
+        return settleCount;
+    }
+
+    inline int getRelaxCount() const noexcept {
+        return relaxCount;
+    }
+
+    inline double getElapsedMilliseconds() const noexcept {
+        return timer.elapsedMilliseconds();
+    }
+
+    // --- Validation and utility methods ---
+
+    /**
+     * @brief Check if a vertex has a valid result (visited and arrival time is not never).
+     * @param vertex The vertex to check
+     * @return true if vertex was reached with a finite arrival time
+     */
+    inline bool hasValidResult(const Vertex vertex) const noexcept {
+        return visited(vertex) && label[vertex].arrivalTime != never;
+    }
+
+    /**
+     * @brief Count the number of reachable vertices from the last query.
+     * @return Number of vertices that were visited
+     */
+    inline size_t numReachableVertices() const noexcept {
+        size_t count = 0;
+        for (const auto& l : label) {
+            if (l.timeStamp == timeStamp && l.arrivalTime != never) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    /**
+     * @brief Get all reachable vertices from the last query.
+     * @return Vector of vertices that were reached
+     */
+    inline std::vector<Vertex> getReachableVertices() const noexcept {
+        std::vector<Vertex> reachable;
+        for (size_t i = 0; i < label.size(); ++i) {
+            if (label[i].timeStamp == timeStamp && label[i].arrivalTime != never) {
+                reachable.push_back(Vertex(i));
+            }
+        }
+        return reachable;
+    }
+
+    /**
+     * @brief Validate that the path is consistent (each vertex's parent leads to it).
+     * @param vertex The vertex to validate the path to
+     * @return true if path is valid, false otherwise
+     */
+    inline bool validatePath(const Vertex vertex) const noexcept {
+        if (!visited(vertex)) return false;
+
+        Vertex current = vertex;
+        std::set<Vertex> seen;
+
+        while (label[current].parent != noVertex) {
+            // Check for cycles
+            if (seen.count(current) > 0) return false;
+            seen.insert(current);
+
+            Vertex parent = label[current].parent;
+
+            // Check parent is visited
+            if (!visited(parent)) return false;
+
+            // Check parent has earlier arrival time
+            if (label[parent].arrivalTime > label[current].arrivalTime) return false;
+
+            current = parent;
+        }
+
+        return true;
+    }
 
 private:
     inline VertexLabel& getLabel(const Vertex vertex) noexcept {
@@ -201,8 +388,12 @@ private:
     }
 
 private:
-    const GRAPH& graph;
-    const INITIAL_TRANSFERS& initialTransfers; // New member to hold the CH/Initial Transfer object
+    const GRAPH& graph; // Now expects a TimeDependentGraph
+	RAPTOR::BucketCHInitialTransfers initialTransfers;
+    Vertex source;
+    int departureTime;
+    Vertex targetVertex;
+    StopId targetStop;
 
     ExternalKHeap<2, VertexLabel> Q;
 
@@ -210,5 +401,7 @@ private:
     int timeStamp;
 
     int settleCount;
+    int relaxCount;
     Timer timer;
+
 };

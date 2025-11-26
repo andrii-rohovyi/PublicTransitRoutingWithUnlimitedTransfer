@@ -44,6 +44,7 @@ int main(int argc, char** argv) {
     new RunDijkstraRAPTORQueries(shell);
     new RunDijkstraRAPTORQueriesNoCH(shell);
     new RunTDDijkstraQueries(shell);
+    new RunTDDijkstraFullQueries(shell);
     new RunTDDijkstraQueriesFromBinary(shell);
     new RunHLRAPTORQueries(shell);
     new RunULTRARAPTORQueries(shell);

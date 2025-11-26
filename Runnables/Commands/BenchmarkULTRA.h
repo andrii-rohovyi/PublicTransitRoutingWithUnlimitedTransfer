@@ -14,6 +14,7 @@ using namespace Shell;
 #include "../../Algorithms/RAPTOR/HLRAPTOR.h"
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraFromBase.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstra.h"
 
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/RAPTOR/RAPTOR.h"
@@ -687,6 +688,74 @@ public:
     }
 };
 
+class RunTDDijkstraFullQueries : public ParameterizedCommand {
+
+public:
+    RunTDDijkstraFullQueries(BasicShell& shell) :
+        ParameterizedCommand(shell, "runTDDijkstraQueries", "Runs the given number of random TD-Dijkstra queries.") {
+        addParameter("Intermediate input file");
+        addParameter("CH data");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // Load intermediate data and build time-dependent graph
+        std::cout << "Loading intermediate data and building time-dependent graph..." << std::endl;
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        CH::CH ch(getParameter("CH data"));
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, "
+                  << graph.numEdges() << " edges" << std::endl;
+
+        // Create the TD-Dijkstra algorithm instance
+        using TDDijkstra = TimeDependentDijkstraFull<TimeDependentGraph, false>;
+        TDDijkstra algorithm(graph, ch);
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(graph.numVertices(), n);
+
+        // Statistics accumulators
+        size_t totalSettles = 0;
+        size_t totalRelaxes = 0;
+        double totalTime = 0.0;
+        size_t reachableCount = 0;
+        int totalArrivalTime = 0;
+
+        std::cout << "\nRunning " << n << " TD-Dijkstra queries..." << std::endl;
+
+        // Run all queries
+        for (const VertexQuery& query : queries) {
+            algorithm.run(query.source, query.departureTime, query.target);
+
+            totalSettles += algorithm.getSettleCount();
+            totalRelaxes += algorithm.getRelaxCount();
+            totalTime += algorithm.getElapsedMilliseconds();
+
+            if (algorithm.reachable(query.target)) {
+                reachableCount++;
+                totalArrivalTime += algorithm.getArrivalTime(query.target);
+            }
+        }
+
+        // Print statistics
+        std::cout << "\n=== TD-Dijkstra Statistics ===" << std::endl;
+        std::cout << "Total queries: " << n << std::endl;
+        std::cout << "Reachable targets: " << reachableCount << " ("
+                  << String::prettyDouble(100.0 * reachableCount / n) << "%)" << std::endl;
+        std::cout << "\nAverage per query:" << std::endl;
+        std::cout << "  Vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
+        std::cout << "  Edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
+        std::cout << "  Query time: " << String::prettyDouble(totalTime / n) << " ms" << std::endl;
+
+        if (reachableCount > 0) {
+            std::cout << "  Arrival time (reachable): "
+                      << String::prettyInt(totalArrivalTime / reachableCount) << std::endl;
+        }
+
+        std::cout << "\nTotal execution time: " << String::prettyDouble(totalTime) << " ms" << std::endl;
+    }
+};
+
 class RunTDDijkstraQueriesFromBinary : public ParameterizedCommand {
 
 public:
@@ -787,8 +856,8 @@ public:
         // --- Run TD-Dijkstra ---
         std::cout << "\n--- Running TD-Dijkstra ---" << std::endl;
 
-        using TDDijkstra = TimeDependentDijkstra<TimeDependentGraph, false>;
-        TDDijkstra algorithm_td(graph);
+        using TDDijkstra = TimeDependentDijkstraFull<TimeDependentGraph, false>;
+        TDDijkstra algorithm_td(graph, ch);
 
         size_t totalSettles = 0;
         size_t totalRelaxes = 0;
