@@ -52,7 +52,8 @@ public:
         , label(g.numVertices() * 2)
         , timeStamp(0)
         , settleCount(0)
-        , relaxCount(0) {
+        , relaxCount(0)
+        , targetVertex(noVertex) {
             if (chData) {
                 initialTransfers = std::make_unique<CoreCHInitialTransfers>(*chData, FORWARD, numberOfStops);
             }
@@ -64,6 +65,7 @@ public:
         settleCount = 0;
         relaxCount = 0;
         timer.restart();
+        targetVertex = noVertex;
     }
 
     inline void addSource(const Vertex s, const int time) noexcept {
@@ -78,6 +80,7 @@ public:
     template<typename STOP = NO_OPERATION>
     inline void run(const Vertex source, const int departureTime, const Vertex target = noVertex, const STOP& stop = NoOperation) noexcept {
         clear();
+        targetVertex = target;  // Store target for backward distance lookups
         if (initialTransfers) {
             initialTransfers->run(source, target);
             for (const Vertex stop : initialTransfers->getForwardPOIs()) {
@@ -173,7 +176,16 @@ private:
             const State s = (uidx % 2 == 1) ? State::OnVehicle : State::AtStop;
 
             settleCount++;
-            if (u == target) break;
+            
+            // Target pruning: if current arrival time exceeds the target's best arrival time, stop
+            // This ensures we explore all stops that could potentially improve the target arrival
+            if (target != noVertex) {
+                const Label& targetLabel = label[indexOf(target, State::AtStop)];
+                if (targetLabel.timeStamp == timeStamp && cur->arrivalTime >= targetLabel.arrivalTime) {
+                    break;  // No point exploring further - all remaining vertices have worse arrival times
+                }
+            }
+            
             if (stop()) break;
 
             const int t = cur->arrivalTime;
@@ -202,6 +214,16 @@ private:
                              break; // Found the trip segment
                         }
                     }
+                }
+            }
+            
+            // Check if we can reach the target via CoreCH backward distance
+            // This is crucial for non-stop targets that aren't directly reachable via TD graph edges
+            if (s == State::AtStop && u < numberOfStops && targetVertex != noVertex && initialTransfers) {
+                const int backwardDist = initialTransfers->getBackwardDistance(u);
+                if (backwardDist != INFTY) {
+                    const int arrivalAtTarget = t + backwardDist;
+                    relaxWalking(indexOf(targetVertex, State::AtStop), u, s, arrivalAtTarget, curReachedByWalking);
                 }
             }
             
@@ -266,14 +288,14 @@ private:
         }
     }
 
-    inline void relaxWalking(const size_t vidx, const Vertex parent, const State parentState, const int newTime, const bool parentWasWalking) noexcept {
+    inline void relaxWalking(const size_t vidx, const Vertex parent, const State parentState, const int newTime, const bool reachedByWalking) noexcept {
         relaxCount++;
         Label& L = getLabel(vidx);
         if (L.arrivalTime > newTime) {
             L.arrivalTime = newTime;
             L.parent = parent;
             L.parentState = parentState;
-            L.reachedByWalking = parentWasWalking;  // Inherit walking status from parent
+            L.reachedByWalking = reachedByWalking;
             L.tripId = -1;
             Q.update(&L);
         }
@@ -291,4 +313,6 @@ private:
     int relaxCount;
     Timer timer;
     std::unique_ptr<CoreCHInitialTransfers> initialTransfers;
+    Vertex targetVertex;  // Target vertex for backward distance lookups
 };
+
