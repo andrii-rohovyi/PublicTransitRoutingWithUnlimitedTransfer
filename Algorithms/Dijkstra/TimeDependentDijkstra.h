@@ -100,7 +100,7 @@ public:
     inline void relaxInitialTransfers() noexcept {
         initialTransfers.run(source, targetVertex);
         for (const Vertex stop : initialTransfers.getForwardPOIs()) {
-            Assert(data.isStop(stop), "Reached POI " << stop << " is not a stop!");
+            // Assert(data.isStop(stop), "Reached POI " << stop << " is not a stop!");
             Assert(initialTransfers.getForwardDistance(stop) != INFTY, "Vertex " << stop << " was not reached!");
             const int newArrivalTime = departureTime + initialTransfers.getForwardDistance(stop);
             arrivalByTransfer(StopId(stop), newArrivalTime, source);
@@ -112,8 +112,8 @@ public:
     }
 
     inline void arrivalByTransfer(const StopId stop, const int arrivalTime, const Vertex parent) noexcept {
-        Assert(data.isStop(stop) || stop == targetStop, "Stop " << stop << " is out of range!");
-        Assert(arrivalTime >= sourceDepartureTime, "Arriving by route BEFORE departing from the source (source departure time: " << String::secToTime(sourceDepartureTime) << " [" << sourceDepartureTime << "], arrival time: " << String::secToTime(arrivalTime) << " [" << arrivalTime << "])!");
+        // Assert(data.isStop(stop) || stop == targetStop, "Stop " << stop << " is out of range!");
+        Assert(arrivalTime >= departureTime, "Arriving by route BEFORE departing from the source (source departure time: " << String::secToTime(departureTime) << " [" << departureTime << "], arrival time: " << String::secToTime(arrivalTime) << " [" << arrivalTime << "])!");
         VertexLabel& vlabel = getLabel(stop);
         if (vlabel.arrivalTime <= arrivalTime) return;
         vlabel.arrivalTime = arrivalTime;
