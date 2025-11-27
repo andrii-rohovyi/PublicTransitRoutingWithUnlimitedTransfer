@@ -979,15 +979,11 @@ public:
         std::cout << "\n--- Comparison Results ---" << std::endl;
         bool results_match = true;
         size_t mismatchCount = 0;
-        size_t pureWalkingMismatchCount = 0;
-        size_t transitMismatchCount = 0;
         std::vector<size_t> mismatchIndices;
         for (size_t i = 0; i < n; ++i) {
             if (results_mr[i] != results_td[i]) {
                 // Check if this is a pure walking query (no transit used)
                 // A pure walking query has arrival time = departure time + walk distance
-                const int walkTime = results_td[i] - queries[i].departureTime;
-                const bool isPureWalking = (results_mr[i] - queries[i].departureTime == walkTime + (results_mr[i] - results_td[i]));
                 
                 if (mismatchCount < 10) {  // Only print first 10 mismatches
                     std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i] 
@@ -1011,6 +1007,111 @@ public:
                 if (i < mismatchIndices.size() - 1) std::cout << ", ";
             }
             std::cout << std::endl;
+        }
+    }
+};
+
+class CompareMRwithTDStatefulCoreCH : public ParameterizedCommand {
+
+public:
+    CompareMRwithTDStatefulCoreCH(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareMRwithTDStatefulCoreCH", "Compares MR (with CoreCH) with TD-Dijkstra (stateful buffers on transfers only) with CoreCH.") {
+        addParameter("RAPTOR input file");
+        addParameter("Intermediate input file");
+        addParameter("Core CH input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+        
+        std::cout << "Building time-dependent graph..." << std::endl;
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
+                  << graph.numEdges() << " edges" << std::endl;
+        
+        std::cout << "Loading CoreCH..." << std::endl;
+        CH::CH ch(getParameter("Core CH input file"));
+        std::cout << "CoreCH loaded." << std::endl;
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.getGraph(FORWARD).numVertices(), n);
+
+        std::vector<int> results_mr;
+        std::vector<int> results_td;
+
+        // --- Run MR with CoreCH ---
+        std::cout << "\n--- Running MR (with CoreCH) ---" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+            algorithm_mr(raptorData, ch);
+        
+        Timer mrTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_mr.run(query.source, query.departureTime, query.target);
+            results_mr.push_back(algorithm_mr.getEarliestArrivalTime(query.target));
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  MR: " << (i + 1) << "/" << n << " queries (" 
+                          << String::msToString(mrTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        std::cout << std::endl;
+
+        std::cout << "--- Statistics MR (with CoreCH) ---" << std::endl;
+        algorithm_mr.getProfiler().printStatistics();
+
+        // --- Run TD-Dijkstra (stateful) with CoreCH ---
+        std::cout << "\n--- Running TD-Dijkstra (stateful) with CoreCH ---" << std::endl;
+
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
+        TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops(), &ch);
+
+        size_t totalSettles = 0;
+        size_t totalRelaxes = 0;
+
+        Timer tdTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_td.run(query.source, query.departureTime, query.target);
+            results_td.push_back(algorithm_td.getArrivalTime(query.target));
+            totalSettles += algorithm_td.getSettleCount();
+            totalRelaxes += algorithm_td.getRelaxCount();
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries (" 
+                          << String::msToString(tdTimer.elapsedMilliseconds()) << ")" << std::flush;
+            }
+        }
+        std::cout << std::endl;
+        
+        std::cout << "--- Statistics TD-Dijkstra (stateful) ---" << std::endl;
+        std::cout << "Total queries: " << n << std::endl;
+        std::cout << "Avg. vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
+        std::cout << "Avg. edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
+
+        // --- Compare results ---
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        bool results_match = true;
+        size_t mismatchCount = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (results_mr[i] != results_td[i]) {
+                if (mismatchCount < 10) {
+                    std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i] 
+                              << ", TD-Dijkstra=" << results_td[i] 
+                              << " (diff: " << (results_mr[i] - results_td[i]) << "s)"
+                              << std::endl;
+                }
+                results_match = false;
+                mismatchCount++;
+            }
+        }
+        
+        if (results_match) {
+            std::cout << "SUCCESS: All results match!" << std::endl;
+        } else {
+            std::cout << "FAILURE: " << mismatchCount << " mismatches found." << std::endl;
         }
     }
 };

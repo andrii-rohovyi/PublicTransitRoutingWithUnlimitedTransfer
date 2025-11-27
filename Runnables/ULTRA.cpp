@@ -77,6 +77,7 @@ int main(int argc, char** argv) {
     new CheckMCRPruning(shell);
     new CompareMRwithTDDijkstra(shell);
     new CompareMRwithTDStatefulNoCH(shell);
+    new CompareMRwithTDStatefulCoreCH(shell);
     new DebugSingleQuery(shell);
 
     //Multiple transfer modes

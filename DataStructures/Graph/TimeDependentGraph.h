@@ -34,6 +34,7 @@ using TransferGraph = ::TransferGraph;
 struct DiscreteTrip {
     int departureTime;
     int arrivalTime;
+    int tripId = -1;
 
     inline bool operator<(const DiscreteTrip& other) const noexcept {
         return departureTime < other.departureTime;
@@ -213,7 +214,8 @@ public:
         tripSegments.reserve(inter.trips.size() * 10); // Pre-allocate to reduce rehashing
 
         std::cout << "Building trip segments from " << inter.trips.size() << " trips..." << std::flush;
-        for (const Intermediate::Trip& trip : inter.trips) {
+        for (size_t tripId = 0; tripId < inter.trips.size(); ++tripId) {
+            const Intermediate::Trip& trip = inter.trips[tripId];
             for (size_t i = 0; i + 1 < trip.stopEvents.size(); ++i) {
                 const Intermediate::StopEvent& stopEventU = trip.stopEvents[i];
                 const Intermediate::StopEvent& stopEventV = trip.stopEvents[i + 1];
@@ -225,7 +227,8 @@ public:
                 // The TD-Dijkstra will apply the buffer when boarding.
                 tripSegments[{u, v}].emplace_back(DiscreteTrip{
                     .departureTime = stopEventU.departureTime,
-                    .arrivalTime = stopEventV.arrivalTime
+                    .arrivalTime = stopEventV.arrivalTime,
+                    .tripId = (int)tripId
                 });
             }
         }

@@ -2,12 +2,15 @@
 
 #include <vector>
 #include <set>
+#include <memory>
 #include "../../Helpers/Types.h"
 #include "../../Helpers/Timer.h"
 #include "../../Helpers/String/String.h"
 #include "../../DataStructures/Container/ExternalKHeap.h"
 #include "../../DataStructures/Attributes/AttributeNames.h"
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
+#include "../../Algorithms/CH/CH.h"
+#include "../../Algorithms/CH/Query/CHQuery.h"
 
 // A two-state time-dependent Dijkstra that applies per-stop min transfer time (buffer)
 // only when boarding a scheduled trip from an "at-stop" state. Continuing in-vehicle
@@ -18,17 +21,19 @@ class TimeDependentDijkstraStateful {
 public:
     using Graph = GRAPH;
     static constexpr bool Debug = DEBUG;
+    using CoreCHInitialTransfers = CH::Query<CHGraph, true, false, true>;
 
     enum class State : uint8_t { AtStop = 0, OnVehicle = 1 };
 
     struct Label : public ExternalKHeapElement {
-        Label() : ExternalKHeapElement(), arrivalTime(intMax), parent(noVertex), parentState(State::AtStop), timeStamp(-1), reachedByWalking(false) {}
+        Label() : ExternalKHeapElement(), arrivalTime(intMax), parent(noVertex), parentState(State::AtStop), timeStamp(-1), reachedByWalking(false), tripId(-1) {}
         inline void reset(int ts) {
             arrivalTime = intMax;
             parent = noVertex;
             parentState = State::AtStop;
             timeStamp = ts;
             reachedByWalking = false;
+            tripId = -1;
         }
         inline bool hasSmallerKey(const Label* other) const noexcept { return arrivalTime < other->arrivalTime; }
         int arrivalTime;
@@ -36,17 +41,22 @@ public:
         State parentState;
         int timeStamp;
         bool reachedByWalking;  // True if reached via pure walking (no transit used)
+        int tripId;
     };
 
 public:
-    TimeDependentDijkstraStateful(const Graph& g, const size_t numStops = 0)
+    TimeDependentDijkstraStateful(const Graph& g, const size_t numStops = 0, const CH::CH* chData = nullptr)
         : graph(g)
         , numberOfStops(numStops == 0 ? g.numVertices() : numStops)
         , Q(g.numVertices() * 2)
         , label(g.numVertices() * 2)
         , timeStamp(0)
         , settleCount(0)
-        , relaxCount(0) {}
+        , relaxCount(0) {
+            if (chData) {
+                initialTransfers = std::make_unique<CoreCHInitialTransfers>(*chData, FORWARD, numberOfStops);
+            }
+        }
 
     inline void clear() noexcept {
         Q.clear();
@@ -58,15 +68,31 @@ public:
 
     inline void addSource(const Vertex s, const int time) noexcept {
         Label& L = getLabel(indexOf(s, State::AtStop));
-        L.arrivalTime = time;
-        L.reachedByWalking = true;  // Source is reached by walking
-        Q.update(&L);
+        if (time < L.arrivalTime) {
+            L.arrivalTime = time;
+            L.reachedByWalking = true;  // Source is reached by walking
+            Q.update(&L);
+        }
     }
 
     template<typename STOP = NO_OPERATION>
     inline void run(const Vertex source, const int departureTime, const Vertex target = noVertex, const STOP& stop = NoOperation) noexcept {
         clear();
-        addSource(source, departureTime);
+        if (initialTransfers) {
+            initialTransfers->run(source, target);
+            for (const Vertex stop : initialTransfers->getForwardPOIs()) {
+                const int arrivalTime = departureTime + initialTransfers->getForwardDistance(stop);
+                addSource(stop, arrivalTime);
+            }
+            if (target != noVertex) {
+                const int dist = initialTransfers->getDistance();
+                if (dist != INFTY) {
+                    addSource(target, departureTime + dist);
+                }
+            }
+        } else {
+            addSource(source, departureTime);
+        }
         runRelaxation(target, stop);
     }
 
@@ -160,8 +186,7 @@ private:
 
                 // Optimization: Allow continuing on the same vehicle (zero buffer)
                 // We check if there's a trip departing at or very shortly after our arrival.
-                // Use the stop's min transfer time as tolerance to handle dwell times.
-                const int sameVehicleTolerance = graph.getMinTransferTimeAt(u);
+                // We MUST match the tripId to ensure we stay on the same vehicle.
                 for (const Edge e : graph.edgesFrom(u)) {
                     const Vertex v = graph.get(ToVertex, e);
                     const auto& atf = graph.get(Function, e);
@@ -170,11 +195,11 @@ private:
                     auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), t, 
                         [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
                     
-                    if (it != atf.discreteTrips.end()) {
-                        // If departure time is within buffer tolerance of arrival, assume same vehicle.
-                        // This matches the implicit buffer time semantics of MR.
-                        if (it->departureTime <= t + sameVehicleTolerance) {
-                             relaxTransit(indexOf(v, State::OnVehicle), u, s, it->arrivalTime);
+                    // Scan forward for matching tripId
+                    for (; it != atf.discreteTrips.end(); ++it) {
+                        if (it->tripId == cur->tripId) {
+                             relaxTransit(indexOf(v, State::OnVehicle), u, s, it->arrivalTime, it->tripId);
+                             break; // Found the trip segment
                         }
                     }
                 }
@@ -192,9 +217,30 @@ private:
                     // TD graph uses original departure times (no implicit shift), so we
                     // add the buffer to the arrival time to find eligible trips.
                     const int buffer = graph.getMinTransferTimeAt(u);
-                    const int discArrival = graph.getDiscreteArrivalFromThreshold(e, t + buffer);
-                    if (discArrival < never) {
-                        relaxTransit(indexOf(v, State::OnVehicle), u, s, discArrival);
+                    const auto& atf = graph.get(Function, e);
+                    const int threshold = t + buffer;
+                    
+                    auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), threshold,
+                        [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+                    
+                    if (it != atf.discreteTrips.end()) {
+                        const size_t idx = size_t(it - atf.discreteTrips.begin());
+                        // Use suffix minimum to get the best (earliest) arrival among all eligible trips
+                        int bestArrival = never;
+                        if (!atf.suffixMinArrival.empty()) bestArrival = atf.suffixMinArrival[idx];
+                        else bestArrival = it->arrivalTime;
+
+                        if (bestArrival < never) {
+                            // Find the trip that provides this arrival time
+                            int bestTripId = -1;
+                            for (auto scan = it; scan != atf.discreteTrips.end(); ++scan) {
+                                if (scan->arrivalTime == bestArrival) {
+                                    bestTripId = scan->tripId;
+                                    break;
+                                }
+                            }
+                            relaxTransit(indexOf(v, State::OnVehicle), u, s, bestArrival, bestTripId);
+                        }
                     }
                 }
 
@@ -207,7 +253,7 @@ private:
         }
     }
 
-    inline void relaxTransit(const size_t vidx, const Vertex parent, const State parentState, const int newTime) noexcept {
+    inline void relaxTransit(const size_t vidx, const Vertex parent, const State parentState, const int newTime, const int tripId) noexcept {
         relaxCount++;
         Label& L = getLabel(vidx);
         if (L.arrivalTime > newTime) {
@@ -215,6 +261,7 @@ private:
             L.parent = parent;
             L.parentState = parentState;
             L.reachedByWalking = false;  // Reached via transit
+            L.tripId = tripId;
             Q.update(&L);
         }
     }
@@ -227,6 +274,7 @@ private:
             L.parent = parent;
             L.parentState = parentState;
             L.reachedByWalking = parentWasWalking;  // Inherit walking status from parent
+            L.tripId = -1;
             Q.update(&L);
         }
     }
@@ -242,4 +290,5 @@ private:
     int settleCount;
     int relaxCount;
     Timer timer;
+    std::unique_ptr<CoreCHInitialTransfers> initialTransfers;
 };
