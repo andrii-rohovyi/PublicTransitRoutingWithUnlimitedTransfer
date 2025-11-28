@@ -1045,7 +1045,7 @@ public:
 
         // --- Run MR with CoreCH ---
         std::cout << "\n--- Running MR (with CoreCH) ---" << std::endl;
-        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, false, false> 
             algorithm_mr(raptorData, ch);
         
         Timer mrTimer;
@@ -1095,13 +1095,18 @@ public:
         std::cout << "\n--- Comparison Results ---" << std::endl;
         bool results_match = true;
         size_t mismatchCount = 0;
+        int maxDiff = 0;
+        double totalDiff = 0;
+        
         for (size_t i = 0; i < n; ++i) {
             if (results_mr[i] != results_td[i]) {
-                if (mismatchCount < 10) {
+                int diff = results_td[i] - results_mr[i];  // TD arrival - MR arrival (positive = TD is worse)
+                if (diff > maxDiff) maxDiff = diff;
+                totalDiff += diff;
+                if (mismatchCount < 5) {
                     std::cout << "Mismatch for query " << i << ": MR=" << results_mr[i] 
                               << ", TD-Dijkstra=" << results_td[i] 
-                              << " (diff: " << (results_mr[i] - results_td[i]) << "s)"
-                              << std::endl;
+                              << " (TD is " << diff << "s later)" << std::endl;
                 }
                 results_match = false;
                 mismatchCount++;
@@ -1109,9 +1114,12 @@ public:
         }
         
         if (results_match) {
-            std::cout << "SUCCESS: All results match!" << std::endl;
+            std::cout << "SUCCESS: All " << n << " results match!" << std::endl;
         } else {
-            std::cout << "FAILURE: " << mismatchCount << " mismatches found." << std::endl;
+            std::cout << "FAILURE: " << mismatchCount << "/" << n << " mismatches (" 
+                      << (100.0 * mismatchCount / n) << "%)" << std::endl;
+            std::cout << "Max difference: " << maxDiff << "s" << std::endl;
+            std::cout << "Avg difference (mismatches only): " << (totalDiff / mismatchCount) << "s" << std::endl;
         }
     }
 };
