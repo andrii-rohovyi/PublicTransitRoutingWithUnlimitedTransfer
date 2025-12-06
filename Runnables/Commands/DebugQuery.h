@@ -4,16 +4,19 @@
 #include <vector>
 #include <iostream>
 #include <fstream>
+#include <random>
 
 #include "../../Shell/Shell.h"
 using namespace Shell;
 
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
+#include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStateful.h"
 #include "../../DataStructures/RAPTOR/Data.h"
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../DataStructures/Intermediate/Data.h"
 #include "../../DataStructures/Queries/Queries.h"
+#include "../../Algorithms/CH/CH.h"
 
 class DebugSingleQuery : public ParameterizedCommand {
 public:
@@ -21,6 +24,7 @@ public:
         ParameterizedCommand(shell, "debugSingleQuery", "Debug a single query with detailed traces from both MR and TD-Dijkstra.") {
         addParameter("RAPTOR input file");
         addParameter("Intermediate input file");
+        addParameter("Core CH input file");
         addParameter("Query index");
     }
 
@@ -31,12 +35,19 @@ public:
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
         TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
         
-        RAPTOR::Data reverseRaptorData = raptorData.reverseNetwork();
+        CH::CH ch(getParameter("Core CH input file"));
 
         const size_t queryIndex = getParameter<size_t>("Query index");
         
-        // Generate the same queries as in the comparison (seed is hardcoded to 42 in generateRandomVertexQueries)
-        const std::vector<VertexQuery> queries = generateRandomVertexQueries(raptorData.transferGraph.numVertices(), queryIndex + 1);
+        // Generate stop-to-stop queries (matching the comparison command)
+        const size_t numStops = raptorData.numberOfStops();
+        std::vector<VertexQuery> queries;
+        std::mt19937 rng(42);
+        std::uniform_int_distribution<size_t> stopDist(0, numStops - 1);
+        std::uniform_int_distribution<int> timeDist(0, 24 * 60 * 60 - 1);
+        for (size_t i = 0; i <= queryIndex; ++i) {
+            queries.emplace_back(Vertex(stopDist(rng)), Vertex(stopDist(rng)), timeDist(rng));
+        }
         const VertexQuery& query = queries[queryIndex];
 
         std::cout << "\n========================================" << std::endl;
@@ -46,10 +57,10 @@ public:
         std::cout << "  Departure Time: " << query.departureTime << " (" << secondsToString(query.departureTime) << ")" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
-        // Run MR
-        std::cout << "=== Running MR (DijkstraRAPTOR) ===" << std::endl;
-        RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::NoProfiler, true, false> 
-            algorithmMR(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
+        // Run MR (with CoreCH, matching the comparison command)
+        std::cout << "=== Running MR (DijkstraRAPTOR) with CoreCH ===" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::NoProfiler, false, false> 
+            algorithmMR(raptorData, ch);
         
         algorithmMR.run(query.source, query.departureTime, query.target);
         const int mrArrival = algorithmMR.getEarliestArrivalTime(query.target);
@@ -88,10 +99,10 @@ public:
         }
 
         // Run TD-Dijkstra (stateful)
-        std::cout << "\n=== Running TD-Dijkstra (Stateful) ===" << std::endl;
+        std::cout << "\n=== Running TD-Dijkstra (Stateful) with CoreCH ===" << std::endl;
         using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, true>;
-        // Restrict to boarding only from stops (matching MR semantics)
-        TDDijkstraStateful algorithmTD(graph, raptorData.numberOfStops());
+        // Use CoreCH for initial transfers (matching MR semantics)
+        TDDijkstraStateful algorithmTD(graph, raptorData.numberOfStops(), &ch);
         
         algorithmTD.run(query.source, query.departureTime, query.target);
         const int tdArrival = algorithmTD.getArrivalTime(query.target);
