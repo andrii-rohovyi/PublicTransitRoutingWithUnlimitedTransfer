@@ -223,10 +223,13 @@ public:
                 const Vertex u = Vertex(stopEventU.stopId);
                 const Vertex v = Vertex(stopEventV.stopId);
 
-                // Use original departure times from intermediate data.
-                // The TD-Dijkstra will apply the buffer when boarding.
+                // Apply implicit departure buffer times (matching MR's useImplicitDepartureBufferTimes()).
+                // The buffer at departure stop u is subtracted from departure time.
+                // This means: eligible to board if arrival <= shiftedDeparture
+                // Which equals: eligible if arrival + buffer <= originalDeparture
+                const int buffer = (u < inter.stops.size()) ? inter.stops[u].minTransferTime : 0;
                 tripSegments[{u, v}].emplace_back(DiscreteTrip{
-                    .departureTime = stopEventU.departureTime,
+                    .departureTime = stopEventU.departureTime - buffer,  // Implicit buffer
                     .arrivalTime = stopEventV.arrivalTime,
                     .tripId = (int)tripId
                 });

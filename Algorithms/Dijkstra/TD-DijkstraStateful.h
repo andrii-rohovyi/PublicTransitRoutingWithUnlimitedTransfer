@@ -177,8 +177,7 @@ private:
 
             settleCount++;
             
-            // Target pruning: if current arrival time exceeds the target's best arrival time, stop
-            // This ensures we explore all stops that could potentially improve the target arrival
+            // Target pruning - prune when current arrival >= best arrival at target
             if (target != noVertex) {
                 const Label& targetLabel = label[indexOf(target, State::AtStop)];
                 if (targetLabel.timeStamp == timeStamp && cur->arrivalTime >= targetLabel.arrivalTime) {
@@ -199,12 +198,18 @@ private:
                 // Optimization: Allow continuing on the same vehicle (zero buffer)
                 // We check if there's a trip departing at or very shortly after our arrival.
                 // We MUST match the tripId to ensure we stay on the same vehicle.
+                // IMPORTANT: Departure times in graph are shifted by -buffer.
+                // To find our trip (which departs at originalDeparture >= t), we must search for
+                // shiftedDeparture >= t - buffer.
+                const int buffer = (u < numberOfStops) ? graph.getMinTransferTimeAt(u) : 0;
+                const int searchTime = t - buffer;
+
                 for (const Edge e : graph.edgesFrom(u)) {
                     const Vertex v = graph.get(ToVertex, e);
                     const auto& atf = graph.get(Function, e);
                     
-                    // Find trip departing >= t
-                    auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), t, 
+                    // Find trip departing >= searchTime
+                    auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), searchTime, 
                         [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
                     
                     // Scan forward for matching tripId
@@ -235,34 +240,38 @@ private:
                 //   a) Current vertex u is a stop (u < numberOfStops)
                 //   b) We are at the stop (State::AtStop)
                 if (u < numberOfStops && s == State::AtStop) {
-                    // Apply the minimum transfer buffer when boarding from AtStop state.
-                    // TD graph uses original departure times (no implicit shift), so we
-                    // add the buffer to the arrival time to find eligible trips.
-                    const int buffer = graph.getMinTransferTimeAt(u);
+                    // Implicit departure buffer times: departure times in graph are already shifted by -buffer.
+                    // Simply find first trip where shiftedDeparture >= arrival (same as MR).
                     const auto& atf = graph.get(Function, e);
-                    const int threshold = t + buffer;
                     
-                    auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), threshold,
+                    auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), t,
                         [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
                     
                     if (it != atf.discreteTrips.end()) {
-                        const size_t idx = size_t(it - atf.discreteTrips.begin());
-                        // Use suffix minimum to get the best (earliest) arrival among all eligible trips
-                        int bestArrival = never;
-                        if (!atf.suffixMinArrival.empty()) bestArrival = atf.suffixMinArrival[idx];
-                        else bestArrival = it->arrivalTime;
-
-                        if (bestArrival < never) {
-                            // Find the trip that provides this arrival time
-                            int bestTripId = -1;
-                            for (auto scan = it; scan != atf.discreteTrips.end(); ++scan) {
-                                if (scan->arrivalTime == bestArrival) {
-                                    bestTripId = scan->tripId;
-                                    break;
-                                }
-                            }
-                            relaxTransit(indexOf(v, State::OnVehicle), u, s, bestArrival, bestTripId);
-                        }
+                        // FIFO: Use first eligible trip (matching MR behavior)
+                        // Suffix minimum DISABLED for testing
+                        int bestArrival = it->arrivalTime;
+                        int bestTripId = it->tripId;
+                        
+                        // const size_t idx = size_t(it - atf.discreteTrips.begin());
+                        // // Use suffix minimum to get the best (earliest) arrival among all eligible trips
+                        // int bestArrival = never;
+                        // if (!atf.suffixMinArrival.empty()) bestArrival = atf.suffixMinArrival[idx];
+                        // else bestArrival = it->arrivalTime;
+                        //
+                        // if (bestArrival < never) {
+                        //     // Find the trip that provides this arrival time
+                        //     int bestTripId = -1;
+                        //     for (auto scan = it; scan != atf.discreteTrips.end(); ++scan) {
+                        //         if (scan->arrivalTime == bestArrival) {
+                        //             bestTripId = scan->tripId;
+                        //             break;
+                        //         }
+                        //     }
+                        //     relaxTransit(indexOf(v, State::OnVehicle), u, s, bestArrival, bestTripId);
+                        // }
+                        
+                        relaxTransit(indexOf(v, State::OnVehicle), u, s, bestArrival, bestTripId);
                     }
                 }
 
