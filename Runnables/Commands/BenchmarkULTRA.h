@@ -1045,7 +1045,7 @@ public:
 
         // --- Run MR with CoreCH ---
         std::cout << "\n--- Running MR (with CoreCH) ---" << std::endl;
-        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, false, false> 
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
             algorithm_mr(raptorData, ch);
         
         Timer mrTimer;
@@ -1066,7 +1066,7 @@ public:
         // --- Run TD-Dijkstra (stateful) with CoreCH ---
         std::cout << "\n--- Running TD-Dijkstra (stateful) with CoreCH ---" << std::endl;
 
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, true>;
         TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops(), &ch);
 
         size_t totalSettles = 0;
