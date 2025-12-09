@@ -991,6 +991,7 @@ public:
                               << " (diff: " << (results_mr[i] - results_td[i]) << "s)"
                               << std::endl;
                 }
+                
                 results_match = false;
                 mismatchCount++;
                 mismatchIndices.push_back(i);
@@ -1148,7 +1149,7 @@ public:
 
         // --- Run with Target Pruning disabled (baseline) ---
         std::cout << "\n--- Running without Target Pruning ---" << std::endl;
-        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> algorithm_no_pruning(raptorData, ch);
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, false, false> algorithm_no_pruning(raptorData, ch);
         for (const VertexQuery& query : queries) {
             algorithm_no_pruning.run(query.source, query.departureTime, query.target);
             results_no_pruning.push_back(algorithm_no_pruning.getEarliestArrivalTime(query.target));
