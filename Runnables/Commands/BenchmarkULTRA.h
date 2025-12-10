@@ -773,10 +773,6 @@ public:
         std::cout << "Time-dependent graph loaded: " << graph.numVertices() << " vertices, "
                   << graph.numEdges() << " edges" << std::endl;
 
-        // Load intermediate data (Required for O(1) optimization)
-        // std::cout << "Loading intermediate data..." << std::endl;
-        // Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
-
         using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
         
         // Pass intermediateData to constructor
