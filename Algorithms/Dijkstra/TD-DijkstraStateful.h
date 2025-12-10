@@ -17,7 +17,7 @@
 // only when boarding a scheduled trip from an "at-stop" state. Continuing in-vehicle
 // does not incur the buffer. Walking never incurs a buffer.
 
-template<typename GRAPH, bool DEBUG = false>
+template<typename GRAPH, bool DEBUG = false, bool TARGET_PRUNING = true>
 class TimeDependentDijkstraStateful {
 public:
     using Graph = GRAPH;
@@ -240,11 +240,12 @@ private:
             settleCount++;
             
             // Target pruning - prune when current arrival >= best arrival at target
-            if (target != noVertex) {
-                const Label& targetLabel = atStopLabels[target];
-                if (targetLabel.timeStamp == timeStamp && cur->arrivalTime >= targetLabel.arrivalTime) {
-                    // If we can't improve the AtStop label at the target, we can't improve the overall best time.
-                    break; 
+            if constexpr (TARGET_PRUNING) {
+                if (target != noVertex) {
+                    const Label& targetLabel = atStopLabels[target];
+                    if (targetLabel.timeStamp == timeStamp && cur->arrivalTime >= targetLabel.arrivalTime) {
+                        break; 
+                    }
                 }
             }
             
@@ -296,17 +297,60 @@ private:
                 if (u < numberOfStops && s == State::AtStop) {
                     const auto& atf = graph.get(Function, e);
                     
-                    // Find the first eligible trip
+                    // Find first trip departing after 't'
                     auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), t,
                         [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
                     
-                    // Iterate while departure time is identical to the first found trip
-                    // (This ensures we don't miss a "continuing" trip just because a "terminating" trip was sorted first)
-                    if (it != atf.discreteTrips.end()) {
-                        const int firstDeparture = it->departureTime;
-                        for (; it != atf.discreteTrips.end(); ++it) {
-                            relaxTransit(v, u, s, it->arrivalTime, it->tripId);
+                    // 1. Initialize target upper bound
+                    int targetUpperBound = never;
+                    if constexpr (TARGET_PRUNING) {
+                        if (target != noVertex) {
+                            const Label& L = atStopLabels[target];
+                            if (L.timeStamp == timeStamp) { // Check timestamp!
+                                targetUpperBound = L.arrivalTime;
+                            }
                         }
+                    }
+
+                    // 2. Initialize local upper bound
+                    int bestLocalArrival = never;
+                    
+                    // 3. Get buffer at destination (crucial for correctness)
+                    const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
+
+                    // 4. Iterate
+                    for (; it != atf.discreteTrips.end(); ++it) {
+                        
+                        // --- CORRECTED LOCAL PRUNING ---
+                        if (bestLocalArrival != never) {
+                            const size_t idx = std::distance(atf.discreteTrips.begin(), it);
+                            const int minPossibleArrival = atf.suffixMinArrival[idx];
+
+                            // We only prune if the future trip is SO late that even with the 
+                            // transfer penalty, the earlier trip is still faster.
+                            if (minPossibleArrival > bestLocalArrival + bufferAtV) {
+                                break; 
+                            }
+                        }
+                        // -------------------------------
+
+                        // --- TARGET PRUNING ---
+                        if constexpr (TARGET_PRUNING) {
+                            if (targetUpperBound != never) {
+                                const size_t idx = std::distance(atf.discreteTrips.begin(), it);
+                                // If we can't beat the target arrival, stop.
+                                if (atf.suffixMinArrival[idx] >= targetUpperBound) {
+                                    break;
+                                }
+                            }
+                        }
+                        // ----------------------
+
+                        if (it->arrivalTime < bestLocalArrival) {
+                            bestLocalArrival = it->arrivalTime;
+                        }
+
+                        relaxTransit(v, u, s, it->arrivalTime, it->tripId);
                     }
                 }
 
