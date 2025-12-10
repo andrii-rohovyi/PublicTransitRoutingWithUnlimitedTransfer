@@ -296,13 +296,17 @@ private:
                 if (u < numberOfStops && s == State::AtStop) {
                     const auto& atf = graph.get(Function, e);
                     
+                    // Find the first eligible trip
                     auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), t,
                         [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
                     
+                    // Iterate while departure time is identical to the first found trip
+                    // (This ensures we don't miss a "continuing" trip just because a "terminating" trip was sorted first)
                     if (it != atf.discreteTrips.end()) {
-                        int bestArrival = it->arrivalTime;
-                        int bestTripId = it->tripId;
-                        relaxTransit(v, u, s, bestArrival, bestTripId);
+                        const int firstDeparture = it->departureTime;
+                        for (; it != atf.discreteTrips.end() && it->departureTime == firstDeparture; ++it) {
+                            relaxTransit(v, u, s, it->arrivalTime, it->tripId);
+                        }
                     }
                 }
 
