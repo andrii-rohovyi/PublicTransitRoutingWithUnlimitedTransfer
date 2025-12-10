@@ -16,7 +16,7 @@
 // only when boarding a scheduled trip from an "at-stop" state. Continuing in-vehicle
 // does not incur the buffer. Walking never incurs a buffer.
 
-template<typename GRAPH, bool DEBUG = false>
+template<typename GRAPH, bool DEBUG = false, bool TARGET_PRUNING = true>
 class TimeDependentDijkstraStateful {
 public:
     using Graph = GRAPH;
@@ -178,10 +178,12 @@ private:
             settleCount++;
             
             // Target pruning - prune when current arrival >= best arrival at target
+            if constexpr (TARGET_PRUNING) {
             if (target != noVertex) {
-                const Label& targetLabel = label[indexOf(target, State::AtStop)];
-                if (targetLabel.timeStamp == timeStamp && cur->arrivalTime >= targetLabel.arrivalTime) {
-                    break;  // No point exploring further - all remaining vertices have worse arrival times
+                    const Label& targetLabel = label[indexOf(target, State::AtStop)];
+                    if (targetLabel.timeStamp == timeStamp && cur->arrivalTime >= targetLabel.arrivalTime) {
+                        break;  // No point exploring further - all remaining vertices have worse arrival times
+                    }
                 }
             }
             
