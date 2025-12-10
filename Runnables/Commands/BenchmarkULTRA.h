@@ -762,6 +762,7 @@ public:
     RunTDDijkstraQueriesFromBinary(BasicShell& shell) :
         ParameterizedCommand(shell, "runTDDijkstraQueriesFromBinary", "Runs the given number of random TD-Dijkstra queries (precomputed TD graph).") {
         addParameter("TD Graph input file");
+        addParameter("Intermediate input file"); // <--- Added Parameter
         addParameter("Number of queries");
     }
 
@@ -772,7 +773,13 @@ public:
         std::cout << "Time-dependent graph loaded: " << graph.numVertices() << " vertices, "
                   << graph.numEdges() << " edges" << std::endl;
 
+        // Load intermediate data (Required for O(1) optimization)
+        // std::cout << "Loading intermediate data..." << std::endl;
+        // Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+
         using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
+        
+        // Pass intermediateData to constructor
         TDDijkstra algorithm(graph);
 
         const size_t n = getParameter<size_t>("Number of queries");
@@ -950,7 +957,7 @@ public:
         std::cout << "\n--- Running TD-Dijkstra (stateful) ---" << std::endl;
 
         using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
-        // Pass number of stops so TD-Dijkstra only boards from stops (like MR)
+        // Pass intermediateData as the second argument
         TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops());
 
         size_t totalSettles = 0;
@@ -1419,5 +1426,95 @@ public:
         }
         algorithm.getProfiler().printStatistics();
         std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys/n) << std::endl;
+    }
+};
+
+class CheckTDDijkstraPruning : public ParameterizedCommand {
+
+public:
+    CheckTDDijkstraPruning(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkTDDijkstraPruning", "Checks if TD-Dijkstra pruning rules yield the same results as no pruning.") {
+        addParameter("Intermediate input file");
+        addParameter("CH data");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // 1. Load Data
+        std::cout << "Loading intermediate data..." << std::endl;
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        
+        std::cout << "Building time-dependent graph..." << std::endl;
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        std::cout << "Graph built: " << graph.numVertices() << " vertices, " << graph.numEdges() << " edges." << std::endl;
+        
+        std::string chFile = getParameter("CH data");
+        CH::CH* chPointer = nullptr;
+        CH::CH chData; 
+        
+        if (chFile != "nullptr" && !chFile.empty()) {
+            std::cout << "Loading CH data..." << std::endl;
+            chData = CH::CH(chFile);
+            chPointer = &chData;
+        } else {
+            std::cout << "Running without CH optimization." << std::endl;
+        }
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(graph.numVertices(), n);
+
+        std::vector<int> results_no_pruning;
+        std::vector<int> results_pruning;
+
+        // 2. Run WITHOUT Pruning (TARGET_PRUNING = false)
+        std::cout << "\n--- Running without Target Pruning ---" << std::endl;
+        // Template Args: <Graph, Debug=false, TargetPruning=false>
+        using TDDijkstraNoPrune = TimeDependentDijkstraStateful<TimeDependentGraph, false, false>;
+        
+        // Constructor: graph, numStops (0=auto), chPointer
+        TDDijkstraNoPrune algo_no_pruning(graph, 0, chPointer);
+        
+        for (const VertexQuery& query : queries) {
+            algo_no_pruning.run(query.source, query.departureTime, query.target);
+            results_no_pruning.push_back(algo_no_pruning.getArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics (No Pruning) ---" << std::endl;
+        std::cout << "Settles: " << String::prettyDouble((double)algo_no_pruning.getSettleCount() / n) << std::endl;
+        std::cout << "Relaxes: " << String::prettyDouble((double)algo_no_pruning.getRelaxCount() / n) << std::endl;
+        std::cout << "Time:    " << String::prettyDouble(algo_no_pruning.getElapsedMilliseconds() / n) << " ms" << std::endl;
+
+        // 3. Run WITH Pruning (TARGET_PRUNING = true)
+        std::cout << "\n--- Running with Target Pruning ---" << std::endl;
+        // Template Args: <Graph, Debug=false, TargetPruning=true>
+        using TDDijkstraPrune = TimeDependentDijkstraStateful<TimeDependentGraph, false, true>;
+        
+        TDDijkstraPrune algo_pruning(graph, 0, chPointer);
+
+        for (const VertexQuery& query : queries) {
+            algo_pruning.run(query.source, query.departureTime, query.target);
+            results_pruning.push_back(algo_pruning.getArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics (Pruning) ---" << std::endl;
+        std::cout << "Settles: " << String::prettyDouble((double)algo_pruning.getSettleCount() / n) << std::endl;
+        std::cout << "Relaxes: " << String::prettyDouble((double)algo_pruning.getRelaxCount() / n) << std::endl;
+        std::cout << "Time:    " << String::prettyDouble(algo_pruning.getElapsedMilliseconds() / n) << " ms" << std::endl;
+
+        // 4. Compare Results
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        bool match = true;
+        for (size_t i = 0; i < n; ++i) {
+            if (results_no_pruning[i] != results_pruning[i]) {
+                std::cout << "Mismatch at query " << i << ": NoPrune=" << results_no_pruning[i] 
+                          << " vs Prune=" << results_pruning[i] << std::endl;
+                match = false;
+                break;
+            }
+        }
+
+        if (match) {
+            std::cout << "SUCCESS: All results match." << std::endl;
+        } else {
+            std::cout << "FAILURE: Results differ." << std::endl;
+        }
     }
 };
