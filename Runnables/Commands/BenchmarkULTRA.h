@@ -1422,3 +1422,86 @@ public:
         std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys/n) << std::endl;
     }
 };
+
+class CheckTDDijkstraPruning : public ParameterizedCommand {
+
+public:
+    CheckTDDijkstraPruning(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkTDDijkstraPruning", "Checks if TD-Dijkstra pruning rules yield the same results as no pruning.") {
+        addParameter("TD Graph input file");
+        addParameter("CH data");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // 1. Load Data
+        std::cout << "Loading intermediate data..." << std::endl;
+        // Load the raw data
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("TD Graph input file"));
+        
+        std::cout << "Building time-dependent graph..." << std::endl;
+        // Convert it to a Graph
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        
+        std::cout << "Graph built: " << graph.numVertices() << " vertices, " << graph.numEdges() << " edges." << std::endl;
+        
+        std::cout << "Loading CH data..." << std::endl;
+        CH::CH ch(getParameter("CH data"));
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        // Note: We use graph.numVertices() for query generation as the TD graph includes all nodes.
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(graph.numVertices(), n);
+
+        std::vector<int> results_no_pruning;
+        std::vector<int> results_pruning;
+
+        // 2. Run WITHOUT Pruning (TARGET_PRUNING = false)
+        std::cout << "\n--- Running without Target Pruning ---" << std::endl;
+        // Template Args: <Graph, Debug=false, TargetPruning=false>
+        using TDDijkstraNoPrune = TimeDependentDijkstraStateful<TimeDependentGraph, false, false>;
+        // Constructor args: graph, numStops (0=auto), chData
+        TDDijkstraNoPrune algo_no_pruning(graph, 0, &ch);
+        
+        for (const VertexQuery& query : queries) {
+            algo_no_pruning.run(query.source, query.departureTime, query.target);
+            results_no_pruning.push_back(algo_no_pruning.getArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics (No Pruning) ---" << std::endl;
+        std::cout << "Settles: " << String::prettyDouble((double)algo_no_pruning.getSettleCount() / n) << std::endl;
+        std::cout << "Relaxes: " << String::prettyDouble((double)algo_no_pruning.getRelaxCount() / n) << std::endl;
+        std::cout << "Time:    " << String::prettyDouble(algo_no_pruning.getElapsedMilliseconds() / n) << " ms" << std::endl;
+
+        // 3. Run WITH Pruning (TARGET_PRUNING = true)
+        std::cout << "\n--- Running with Target Pruning ---" << std::endl;
+        // Template Args: <Graph, Debug=false, TargetPruning=true>
+        using TDDijkstraPrune = TimeDependentDijkstraStateful<TimeDependentGraph, false, true>;
+        TDDijkstraPrune algo_pruning(graph, 0, &ch);
+
+        for (const VertexQuery& query : queries) {
+            algo_pruning.run(query.source, query.departureTime, query.target);
+            results_pruning.push_back(algo_pruning.getArrivalTime(query.target));
+        }
+        std::cout << "--- Statistics (Pruning) ---" << std::endl;
+        std::cout << "Settles: " << String::prettyDouble((double)algo_pruning.getSettleCount() / n) << std::endl;
+        std::cout << "Relaxes: " << String::prettyDouble((double)algo_pruning.getRelaxCount() / n) << std::endl;
+        std::cout << "Time:    " << String::prettyDouble(algo_pruning.getElapsedMilliseconds() / n) << " ms" << std::endl;
+
+        // 4. Compare Results
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        bool match = true;
+        for (size_t i = 0; i < n; ++i) {
+            if (results_no_pruning[i] != results_pruning[i]) {
+                std::cout << "Mismatch at query " << i << ": NoPrune=" << results_no_pruning[i] 
+                          << " vs Prune=" << results_pruning[i] << std::endl;
+                match = false;
+                break;
+            }
+        }
+
+        if (match) {
+            std::cout << "SUCCESS: All results match." << std::endl;
+        } else {
+            std::cout << "FAILURE: Results differ." << std::endl;
+        }
+    }
+};
