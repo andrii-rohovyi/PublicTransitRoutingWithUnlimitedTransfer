@@ -4,6 +4,7 @@
 #include <set>
 #include <memory>
 #include <deque>
+#include <algorithm>
 #include "../../Helpers/Types.h"
 #include "../../Helpers/Timer.h"
 #include "../../Helpers/String/String.h"
@@ -27,7 +28,8 @@ public:
     enum class State : uint8_t { AtStop = 0, OnVehicle = 1 };
 
     struct Label : public ExternalKHeapElement {
-        Label() : ExternalKHeapElement(), arrivalTime(intMax), parent(noVertex), parentState(State::AtStop), timeStamp(-1), reachedByWalking(false), tripId(-1), vertex(noVertex), state(State::AtStop) {}
+        Label() : ExternalKHeapElement(), arrivalTime(intMax), parent(noVertex), parentState(State::AtStop), timeStamp(-1), reachedByWalking(false), tripId(-1), stopIndex(0), vertex(noVertex), state(State::AtStop) {}
+        
         inline void reset(int ts, Vertex v, State s) {
             arrivalTime = intMax;
             parent = noVertex;
@@ -35,16 +37,20 @@ public:
             timeStamp = ts;
             reachedByWalking = false;
             tripId = -1;
+            stopIndex = 0;
             vertex = v;
             state = s;
         }
+        
         inline bool hasSmallerKey(const Label* other) const noexcept { return arrivalTime < other->arrivalTime; }
+        
         int arrivalTime;
         Vertex parent;
         State parentState;
         int timeStamp;
-        bool reachedByWalking;  // True if reached via pure walking (no transit used)
+        bool reachedByWalking; 
         int tripId;
+        uint16_t stopIndex; // Index of the CURRENT stop in the trip sequence
         Vertex vertex;
         State state;
     };
@@ -55,7 +61,7 @@ public:
         , numberOfStops(numStops == 0 ? g.numVertices() : numStops)
         , Q(g.numVertices() * 2)
         , atStopLabels(g.numVertices())
-        , onVehicleLabels(g.numVertices())
+        , globalVehicleLabels(g.getNumStopEvents(), nullptr) // Flat array for O(1) state lookup
         , timeStamp(0)
         , settleCount(0)
         , relaxCount(0)
@@ -73,10 +79,12 @@ public:
         timer.restart();
         targetVertex = noVertex;
         
-        for (const Vertex v : touchedOnVehicleVertices) {
-            onVehicleLabels[v].clear();
+        // Fast reset of the flat array
+        for (const uint32_t idx : touchedGlobalIndices) {
+            globalVehicleLabels[idx] = nullptr;
         }
-        touchedOnVehicleVertices.clear();
+        touchedGlobalIndices.clear();
+        
         labelPool.clear();
     }
 
@@ -84,7 +92,7 @@ public:
         Label& L = getAtStopLabel(s);
         if (time < L.arrivalTime) {
             L.arrivalTime = time;
-            L.reachedByWalking = true;  // Source is reached by walking
+            L.reachedByWalking = true;
             Q.update(&L);
         }
     }
@@ -92,7 +100,8 @@ public:
     template<typename STOP = NO_OPERATION>
     inline void run(const Vertex source, const int departureTime, const Vertex target = noVertex, const STOP& stop = NoOperation) noexcept {
         clear();
-        targetVertex = target;  // Store target for backward distance lookups
+        targetVertex = target;  
+        
         if (initialTransfers) {
             initialTransfers->run(source, target);
             for (const Vertex stop : initialTransfers->getForwardPOIs()) {
@@ -113,29 +122,13 @@ public:
 
     inline bool reachable(const Vertex v) const noexcept {
         const Label& a = atStopLabels[v];
-        bool reachable = (a.timeStamp == timeStamp && a.arrivalTime != never);
-        if (reachable) return true;
-        
-        if (v < onVehicleLabels.size()) {
-            for (const auto& pair : onVehicleLabels[v]) {
-                if (pair.second->timeStamp == timeStamp && pair.second->arrivalTime != never) return true;
-            }
-        }
-        return false;
+        return (a.timeStamp == timeStamp && a.arrivalTime != never);
     }
 
     inline int getArrivalTime(const Vertex v) const noexcept {
-        int best = never;
         const Label& a = atStopLabels[v];
-        if (a.timeStamp == timeStamp && a.arrivalTime != never) best = std::min(best, a.arrivalTime);
-        
-        if (v < onVehicleLabels.size()) {
-            for (const auto& pair : onVehicleLabels[v]) {
-                const Label* b = pair.second;
-                if (b->timeStamp == timeStamp && b->arrivalTime != never) best = std::min(best, b->arrivalTime);
-            }
-        }
-        return best;
+        if (a.timeStamp == timeStamp) return a.arrivalTime;
+        return never;
     }
 
     inline int getSettleCount() const noexcept { return settleCount; }
@@ -152,7 +145,7 @@ public:
         std::vector<PathEntry> path;
         if (!reachable(target)) return path;
 
-        // Find best ending state
+        // 1. Find best ending state
         const Label* bestLabel = nullptr;
         int bestTime = never;
 
@@ -162,61 +155,45 @@ public:
             bestLabel = &atStop;
         }
 
-        if (target < onVehicleLabels.size()) {
-            for (const auto& pair : onVehicleLabels[target]) {
-                const Label* L = pair.second;
-                if (L->timeStamp == timeStamp && L->arrivalTime < bestTime) {
-                    bestTime = L->arrivalTime;
-                    bestLabel = L;
-                }
-            }
-        }
-
         if (!bestLabel) return path;
 
-        // Backtrack
+        // 2. Backtrack
         const Label* cur = bestLabel;
         while (cur) {
             path.push_back({cur->vertex, cur->state, cur->arrivalTime});
             
             if (cur->parent == noVertex) break;
             
-            // Find parent label
             if (cur->parentState == State::AtStop) {
                 cur = &atStopLabels[cur->parent];
             } else {
                 // Parent is OnVehicle.
                 if (cur->state == State::OnVehicle) {
-                    if (cur->parentState == State::OnVehicle) {
-                        // Same trip: find parent label by tripId
-                        auto it = onVehicleLabels[cur->parent].find(cur->tripId);
-                        if (it != onVehicleLabels[cur->parent].end()) {
-                            cur = it->second;
-                        } else {
-                            break; // Should not happen
-                        }
+                    // Case A: Continue (OnVehicle -> OnVehicle)
+                    if (cur->stopIndex > 0) {
+                        const uint32_t parentAbsIndex = graph.getTripOffset(cur->tripId) + (cur->stopIndex - 1);
+                        cur = globalVehicleLabels[parentAbsIndex];
                     } else {
-                        // Boarding from AtStop
-                        cur = &atStopLabels[cur->parent];
+                        break; 
                     }
                 } else {
-                    // Current state is AtStop. Parent is OnVehicle (alighting) or AtStop (walking).
-                    if (cur->parentState == State::OnVehicle) {
-                        // Alighting. Use the stored tripId to find the parent OnVehicle label
-                        auto it = onVehicleLabels[cur->parent].find(cur->tripId);
-                        if (it != onVehicleLabels[cur->parent].end()) {
-                            cur = it->second;
-                        } else {
-                            break; // Should not happen
+                    // Case B: Alight (OnVehicle -> AtStop)
+                    uint32_t startOffset = graph.getTripOffset(cur->tripId);
+                    uint32_t endOffset = graph.getTripOffset(cur->tripId + 1);
+                    
+                    Label* found = nullptr;
+                    for (uint32_t idx = startOffset; idx < endOffset; ++idx) {
+                        Label* candidate = globalVehicleLabels[idx];
+                        if (candidate && candidate->timeStamp == timeStamp && candidate->vertex == cur->parent) {
+                            found = candidate;
+                            break;
                         }
-                    } else {
-                        // Walking
-                        cur = &atStopLabels[cur->parent];
                     }
+                    cur = found;
                 }
             }
             
-            if (cur->timeStamp != timeStamp) break;
+            if (!cur || cur->timeStamp != timeStamp) break;
         }
         
         std::reverse(path.begin(), path.end());
@@ -239,12 +216,12 @@ private:
 
             settleCount++;
             
-            // Target pruning - prune when current arrival >= best arrival at target
+            // Global Target Pruning
             if constexpr (TARGET_PRUNING) {
                 if (target != noVertex) {
                     const Label& targetLabel = atStopLabels[target];
                     if (targetLabel.timeStamp == timeStamp && cur->arrivalTime >= targetLabel.arrivalTime) {
-                        break; 
+                        continue; 
                     }
                 }
             }
@@ -254,34 +231,22 @@ private:
             const int t = cur->arrivalTime;
             const bool curReachedByWalking = cur->reachedByWalking;
             
-            // Allow alighting from vehicle to stop (zero cost state change)
+            // --- EXPANSION: FROM VEHICLE ---
             if (s == State::OnVehicle) {
-                // Alight: OnVehicle -> AtStop. Pass tripId to store in parentTripId for backtracking.
+                // 1. Alight: OnVehicle -> AtStop
                 relaxWalking(u, u, s, t, false, cur->tripId);
 
-                // Optimization: Allow continuing on the same vehicle (zero buffer)
-                const int buffer = (u < numberOfStops) ? graph.getMinTransferTimeAt(u) : 0;
-                const int searchTime = t - buffer;
-
-                for (const Edge e : graph.edgesFrom(u)) {
-                    const Vertex v = graph.get(ToVertex, e);
-                    const auto& atf = graph.get(Function, e);
-                    
-                    // Find trip departing >= searchTime
-                    auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), searchTime, 
-                        [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
-                    
-                    // Scan forward for matching tripId
-                    for (; it != atf.discreteTrips.end(); ++it) {
-                        if (it->tripId == cur->tripId) {
-                             relaxTransit(v, u, s, it->arrivalTime, it->tripId);
-                             break; // Found the trip segment
-                        }
-                    }
+                // 2. Continue: OnVehicle -> OnVehicle (O(1) Optimization)
+                Vertex nextStop;
+                int nextArrival;
+                
+                // Use the O(1) graph accessor
+                if (graph.getNextStop(cur->tripId, cur->stopIndex, nextStop, nextArrival)) {
+                    relaxTransit(nextStop, u, s, nextArrival, cur->tripId, cur->stopIndex + 1);
                 }
             }
             
-            // Check if we can reach the target via CoreCH backward distance
+            // --- EXPANSION: CH WALKING SHORTCUTS ---
             if (s == State::AtStop && u < numberOfStops && targetVertex != noVertex && initialTransfers) {
                 const int backwardDist = initialTransfers->getBackwardDistance(u);
                 if (backwardDist != INFTY) {
@@ -290,71 +255,69 @@ private:
                 }
             }
             
+            // --- EXPANSION: FROM STOP (Walking & Boarding) ---
             for (const Edge e : graph.edgesFrom(u)) {
                 const Vertex v = graph.get(ToVertex, e);
 
-                // 1) Scheduled (discrete) candidate
+                // 1) BOARDING A VEHICLE
                 if (u < numberOfStops && s == State::AtStop) {
                     const auto& atf = graph.get(Function, e);
                     
-                    // Find first trip departing after 't'
+                    // Implicit buffers are handled by graph data. Search for first trip >= t.
                     auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), t,
                         [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
                     
-                    // 1. Initialize target upper bound
+                    // A. Initialize Target Upper Bound
                     int targetUpperBound = never;
                     if constexpr (TARGET_PRUNING) {
                         if (target != noVertex) {
-                            const Label& L = atStopLabels[target];
-                            if (L.timeStamp == timeStamp) { // Check timestamp!
-                                targetUpperBound = L.arrivalTime;
+                            const Label& targetLabel = atStopLabels[target];
+                            if (targetLabel.timeStamp == timeStamp) {
+                                targetUpperBound = targetLabel.arrivalTime;
                             }
                         }
                     }
 
-                    // 2. Initialize local upper bound
+                    // B. Initialize Local Upper Bound
                     int bestLocalArrival = never;
-                    
-                    // 3. Get buffer at destination (crucial for correctness)
                     const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
 
-                    // 4. Iterate
+                    // C. Iterate
                     for (; it != atf.discreteTrips.end(); ++it) {
                         
-                        // --- CORRECTED LOCAL PRUNING ---
-                        if (bestLocalArrival != never) {
-                            const size_t idx = std::distance(atf.discreteTrips.begin(), it);
-                            const int minPossibleArrival = atf.suffixMinArrival[idx];
+                        // --- PRUNING BLOCK ---
+                        const size_t idx = std::distance(atf.discreteTrips.begin(), it);
+                        const int minPossibleArrival = atf.suffixMinArrival[idx];
 
-                            // We only prune if the future trip is SO late that even with the 
-                            // transfer penalty, the earlier trip is still faster.
+                        // Local Pruning
+                        if (bestLocalArrival != never) {
                             if (minPossibleArrival > bestLocalArrival + bufferAtV) {
                                 break; 
                             }
                         }
-                        // -------------------------------
 
-                        // --- TARGET PRUNING ---
+                        // Target Pruning
                         if constexpr (TARGET_PRUNING) {
                             if (targetUpperBound != never) {
-                                const size_t idx = std::distance(atf.discreteTrips.begin(), it);
-                                // If we can't beat the target arrival, stop.
-                                if (atf.suffixMinArrival[idx] >= targetUpperBound) {
+                                if (minPossibleArrival >= targetUpperBound) {
                                     break;
                                 }
                             }
                         }
-                        // ----------------------
+                        // ---------------------
 
+                        // Update local best
                         if (it->arrivalTime < bestLocalArrival) {
                             bestLocalArrival = it->arrivalTime;
                         }
 
-                        relaxTransit(v, u, s, it->arrivalTime, it->tripId);
+                        // O(1) Index Lookup
+                        const uint16_t nextStopIndex = it->departureStopIndex + 1;
+                        relaxTransit(v, u, s, it->arrivalTime, it->tripId, nextStopIndex);
                     }
                 }
 
-                // 2) Walking candidate - always available
+                // 2) WALKING
                 const int walkArrival = graph.getWalkArrivalFrom(e, t);
                 if (walkArrival < never) {
                     relaxWalking(v, u, s, walkArrival, curReachedByWalking && s == State::AtStop, -1);
@@ -363,22 +326,24 @@ private:
         }
     }
 
-    inline void relaxTransit(const Vertex v, const Vertex parent, const State parentState, const int newTime, const int tripId) noexcept {
+    inline void relaxTransit(const Vertex v, const Vertex parent, const State parentState, const int newTime, const int tripId, const uint16_t stopIndex) noexcept {
         relaxCount++;
         
-        Label* L = nullptr;
-        auto& map = onVehicleLabels[v];
-        auto it = map.find(tripId);
-        if (it != map.end()) {
-            L = it->second;
-            if (L->timeStamp != timeStamp) L->reset(timeStamp, v, State::OnVehicle);
-        } else {
+        // O(1) Absolute Index Calculation
+        const uint32_t absIndex = graph.getTripOffset(tripId) + stopIndex;
+        
+        Label* L = globalVehicleLabels[absIndex];
+        
+        if (!L) {
             labelPool.emplace_back();
             L = &labelPool.back();
             L->reset(timeStamp, v, State::OnVehicle);
             L->tripId = tripId;
-            map[tripId] = L;
-            if (map.size() == 1) touchedOnVehicleVertices.push_back(v);
+            globalVehicleLabels[absIndex] = L;
+            touchedGlobalIndices.push_back(absIndex);
+        } else if (L->timeStamp != timeStamp) {
+            L->reset(timeStamp, v, State::OnVehicle);
+            L->tripId = tripId;
         }
 
         if (L->arrivalTime > newTime) {
@@ -387,6 +352,7 @@ private:
             L->parentState = parentState;
             L->reachedByWalking = false;
             L->tripId = tripId;
+            L->stopIndex = stopIndex;
             Q.update(L);
         }
     }
@@ -399,19 +365,19 @@ private:
             L.parent = parent;
             L.parentState = parentState;
             L.reachedByWalking = reachedByWalking;
-            L.tripId = parentTripId; // Store parent trip ID for backtracking
+            L.tripId = parentTripId; 
             Q.update(&L);
         }
     }
 
 private:
     const Graph& graph;
-    size_t numberOfStops;
+    const size_t numberOfStops;
     ExternalKHeap<2, Label> Q;
     std::vector<Label> atStopLabels;
-    std::vector<std::unordered_map<int, Label*>> onVehicleLabels;
+    std::vector<Label*> globalVehicleLabels; // Indexed by [TripOffset + StopIndex]
+    std::vector<uint32_t> touchedGlobalIndices; // For fast reset
     std::deque<Label> labelPool;
-    std::vector<Vertex> touchedOnVehicleVertices;
     int timeStamp;
     int settleCount;
     int relaxCount;
@@ -419,4 +385,3 @@ private:
     std::unique_ptr<CoreCHInitialTransfers> initialTransfers;
     Vertex targetVertex;
 };
-
