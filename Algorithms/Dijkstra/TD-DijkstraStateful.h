@@ -304,7 +304,7 @@ private:
                     // (This ensures we don't miss a "continuing" trip just because a "terminating" trip was sorted first)
                     if (it != atf.discreteTrips.end()) {
                         const int firstDeparture = it->departureTime;
-                        for (; it != atf.discreteTrips.end() && it->departureTime == firstDeparture; ++it) {
+                        for (; it != atf.discreteTrips.end(); ++it) {
                             relaxTransit(v, u, s, it->arrivalTime, it->tripId);
                         }
                     }
