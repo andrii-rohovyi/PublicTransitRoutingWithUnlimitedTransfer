@@ -59,7 +59,7 @@ public:
 
         // Run MR (with CoreCH, matching the comparison command)
         std::cout << "=== Running MR (DijkstraRAPTOR) with CoreCH ===" << std::endl;
-        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::NoProfiler, false, false> 
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::NoProfiler, true, false> 
             algorithmMR(raptorData, ch);
         
         algorithmMR.run(query.source, query.departureTime, query.target);
@@ -151,6 +151,145 @@ public:
                 std::cout << "   TD-Dijkstra found an earlier arrival." << std::endl;
             } else {
                 std::cout << "   MR found an earlier arrival." << std::endl;
+            }
+        }
+    }
+
+private:
+    inline std::string secondsToString(int seconds) const noexcept {
+        if (seconds >= never) return "NEVER";
+        int hours = seconds / 3600;
+        int minutes = (seconds % 3600) / 60;
+        int secs = seconds % 60;
+        std::stringstream ss;
+        ss << std::setfill('0') << std::setw(2) << hours << ":"
+           << std::setfill('0') << std::setw(2) << minutes << ":"
+           << std::setfill('0') << std::setw(2) << secs;
+        return ss.str();
+    }
+};
+
+class DebugExplicitQuery : public ParameterizedCommand {
+public:
+    DebugExplicitQuery(BasicShell& shell) :
+        ParameterizedCommand(shell, "debugExplicitQuery", "Debug a query with explicit source, target, and departure time.") {
+        addParameter("RAPTOR input file");
+        addParameter("Intermediate input file");
+        addParameter("Core CH input file");
+        addParameter("Source vertex");
+        addParameter("Target vertex");
+        addParameter("Departure time (seconds)");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
+        
+        CH::CH ch(getParameter("Core CH input file"));
+
+        const Vertex source = Vertex(getParameter<size_t>("Source vertex"));
+        const Vertex target = Vertex(getParameter<size_t>("Target vertex"));
+        const int departureTime = getParameter<int>("Departure time (seconds)");
+
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "Query:" << std::endl;
+        std::cout << "  Source: " << source << std::endl;
+        std::cout << "  Target: " << target << std::endl;
+        std::cout << "  Departure Time: " << departureTime << " (" << secondsToString(departureTime) << ")" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        // Run MR (with CoreCH, matching the comparison command)
+        std::cout << "=== Running MR (DijkstraRAPTOR) with CoreCH ===" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::NoProfiler, true, false> 
+            algorithmMR(raptorData, ch);
+        
+        algorithmMR.run(source, departureTime, target);
+        const int mrArrival = algorithmMR.getEarliestArrivalTime(target);
+        
+        std::cout << "MR Arrival Time: " << mrArrival << " (" << secondsToString(mrArrival) << ")" << std::endl;
+        std::cout << "MR Reachable: " << (algorithmMR.reachable(target) ? "Yes" : "No") << std::endl;
+        
+        if (mrArrival < never) {
+            const auto& arrivalTimes = algorithmMR.getArrivalTimes(target);
+            std::cout << "MR Arrival times by round: ";
+            for (size_t i = 0; i < arrivalTimes.size(); ++i) {
+                if (arrivalTimes[i] < never) {
+                    std::cout << "R" << i << "=" << arrivalTimes[i] << " ";
+                }
+            }
+            std::cout << std::endl;
+            
+            const auto& journeys = algorithmMR.getJourneys(target);
+            std::cout << "MR found " << journeys.size() << " journeys (one per improving round)" << std::endl;
+            if (!journeys.empty()) {
+                std::cout << "\nMR Best Journey (" << journeys.back().size() << " legs):" << std::endl;
+                for (const auto& leg : journeys.back()) {
+                    std::cout << "  ";
+                    if (leg.usesRoute) {
+                        std::cout << "ROUTE " << leg.routeId << ": ";
+                    } else {
+                        std::cout << "TRANSFER: ";
+                    }
+                    std::cout << leg.from << " -> " << leg.to 
+                              << " @ " << secondsToString(leg.departureTime)
+                              << " arr " << secondsToString(leg.arrivalTime)
+                              << " (dur: " << (leg.arrivalTime - leg.departureTime) << "s)"
+                              << std::endl;
+                }
+            }
+        }
+
+        // Run TD-Dijkstra (stateful)
+        std::cout << "\n=== Running TD-Dijkstra (Stateful) with CoreCH ===" << std::endl;
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, true>;
+        TDDijkstraStateful algorithmTD(graph, raptorData.numberOfStops(), &ch);
+        
+        algorithmTD.run(source, departureTime, target);
+        const int tdArrival = algorithmTD.getArrivalTime(target);
+        
+        std::cout << "TD Arrival Time: " << tdArrival << " (" << secondsToString(tdArrival) << ")" << std::endl;
+        std::cout << "Vertices settled: " << algorithmTD.getSettleCount() << std::endl;
+        std::cout << "Edges relaxed: " << algorithmTD.getRelaxCount() << std::endl;
+        
+        if (tdArrival < never) {
+            const auto path = algorithmTD.getPath(target);
+            std::cout << "\nTD Path (" << path.size() << " vertices):" << std::endl;
+            
+            for (size_t i = 0; i < path.size(); ++i) {
+                const auto& entry = path[i];
+                const int minTransfer = graph.getMinTransferTimeAt(entry.vertex);
+                const bool isStop = (entry.vertex < raptorData.numberOfStops());
+                std::cout << "  [" << i << "] Vertex " << entry.vertex 
+                          << (isStop ? " (STOP)" : " (non-stop)")
+                          << " @ " << secondsToString(entry.arrivalTime)
+                          << " (state: " << (entry.state == TDDijkstraStateful::State::AtStop ? "AtStop" : "OnVehicle") << ")"
+                          << " [buffer=" << minTransfer << "s]";
+                
+                if (i + 1 < path.size() && entry.state == TDDijkstraStateful::State::AtStop && 
+                    path[i + 1].state == TDDijkstraStateful::State::OnVehicle) {
+                    const int waitTime = path[i + 1].arrivalTime - entry.arrivalTime;
+                    std::cout << " -> BOARDING (wait: " << waitTime << "s)";
+                    if (waitTime < minTransfer) {
+                        std::cout << " **VIOLATION** (needs " << minTransfer << "s)";
+                    }
+                }
+                std::cout << std::endl;
+            }
+        }
+
+        // Compare
+        std::cout << "\n=== Comparison ===" << std::endl;
+        if (mrArrival == tdArrival) {
+            std::cout << "✓ Results match!" << std::endl;
+        } else {
+            std::cout << "✗ Results differ by " << (tdArrival - mrArrival) << " seconds" << std::endl;
+            if (tdArrival < mrArrival) {
+                std::cout << "   TD-Dijkstra found an earlier arrival (TD faster)." << std::endl;
+            } else {
+                std::cout << "   MR found an earlier arrival (TD slower)." << std::endl;
             }
         }
     }
