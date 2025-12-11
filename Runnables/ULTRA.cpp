@@ -74,6 +74,7 @@ int main(int argc, char** argv) {
     new CheckBMcRAPTORPruning(shell);
     new CheckUBMRAPTORPruning(shell);
     new CheckDijkstraRAPTORPruning(shell);
+    new CheckTDDijkstraPruning(shell);
     new CheckMCRPruning(shell);
     new CompareMRwithTDDijkstra(shell);
     new CompareMRwithTDStatefulNoCH(shell);

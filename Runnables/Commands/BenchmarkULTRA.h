@@ -762,6 +762,7 @@ public:
     RunTDDijkstraQueriesFromBinary(BasicShell& shell) :
         ParameterizedCommand(shell, "runTDDijkstraQueriesFromBinary", "Runs the given number of random TD-Dijkstra queries (precomputed TD graph).") {
         addParameter("TD Graph input file");
+        addParameter("Intermediate input file"); // <--- Added Parameter
         addParameter("Number of queries");
     }
 
@@ -773,6 +774,8 @@ public:
                   << graph.numEdges() << " edges" << std::endl;
 
         using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
+        
+        // Pass intermediateData to constructor
         TDDijkstra algorithm(graph);
 
         const size_t n = getParameter<size_t>("Number of queries");
@@ -950,7 +953,7 @@ public:
         std::cout << "\n--- Running TD-Dijkstra (stateful) ---" << std::endl;
 
         using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
-        // Pass number of stops so TD-Dijkstra only boards from stops (like MR)
+        // Pass intermediateData as the second argument
         TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops());
 
         size_t totalSettles = 0;
@@ -1428,7 +1431,7 @@ class CheckTDDijkstraPruning : public ParameterizedCommand {
 public:
     CheckTDDijkstraPruning(BasicShell& shell) :
         ParameterizedCommand(shell, "checkTDDijkstraPruning", "Checks if TD-Dijkstra pruning rules yield the same results as no pruning.") {
-        addParameter("TD Graph input file");
+        addParameter("Intermediate input file");
         addParameter("CH data");
         addParameter("Number of queries");
     }
@@ -1436,20 +1439,25 @@ public:
     virtual void execute() noexcept {
         // 1. Load Data
         std::cout << "Loading intermediate data..." << std::endl;
-        // Load the raw data
-        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("TD Graph input file"));
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
         
         std::cout << "Building time-dependent graph..." << std::endl;
-        // Convert it to a Graph
         TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
-        
         std::cout << "Graph built: " << graph.numVertices() << " vertices, " << graph.numEdges() << " edges." << std::endl;
         
-        std::cout << "Loading CH data..." << std::endl;
-        CH::CH ch(getParameter("CH data"));
+        std::string chFile = getParameter("CH data");
+        CH::CH* chPointer = nullptr;
+        CH::CH chData; 
+        
+        if (chFile != "nullptr" && !chFile.empty()) {
+            std::cout << "Loading CH data..." << std::endl;
+            chData = CH::CH(chFile);
+            chPointer = &chData;
+        } else {
+            std::cout << "Running without CH optimization." << std::endl;
+        }
 
         const size_t n = getParameter<size_t>("Number of queries");
-        // Note: We use graph.numVertices() for query generation as the TD graph includes all nodes.
         const std::vector<VertexQuery> queries = generateRandomVertexQueries(graph.numVertices(), n);
 
         std::vector<int> results_no_pruning;
@@ -1459,8 +1467,9 @@ public:
         std::cout << "\n--- Running without Target Pruning ---" << std::endl;
         // Template Args: <Graph, Debug=false, TargetPruning=false>
         using TDDijkstraNoPrune = TimeDependentDijkstraStateful<TimeDependentGraph, false, false>;
-        // Constructor args: graph, numStops (0=auto), chData
-        TDDijkstraNoPrune algo_no_pruning(graph, 0, &ch);
+        
+        // Constructor: graph, numStops (0=auto), chPointer
+        TDDijkstraNoPrune algo_no_pruning(graph, 0, chPointer);
         
         for (const VertexQuery& query : queries) {
             algo_no_pruning.run(query.source, query.departureTime, query.target);
@@ -1475,7 +1484,8 @@ public:
         std::cout << "\n--- Running with Target Pruning ---" << std::endl;
         // Template Args: <Graph, Debug=false, TargetPruning=true>
         using TDDijkstraPrune = TimeDependentDijkstraStateful<TimeDependentGraph, false, true>;
-        TDDijkstraPrune algo_pruning(graph, 0, &ch);
+        
+        TDDijkstraPrune algo_pruning(graph, 0, chPointer);
 
         for (const VertexQuery& query : queries) {
             algo_pruning.run(query.source, query.departureTime, query.target);

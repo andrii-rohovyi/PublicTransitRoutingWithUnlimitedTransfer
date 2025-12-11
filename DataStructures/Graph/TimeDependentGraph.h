@@ -35,6 +35,7 @@ struct DiscreteTrip {
     int departureTime;
     int arrivalTime;
     int tripId = -1;
+    uint16_t departureStopIndex = 0;
 
     inline bool operator<(const DiscreteTrip& other) const noexcept {
         return departureTime < other.departureTime;
@@ -70,7 +71,6 @@ struct ArrivalTimeFunction {
         int minArrivalTime = never;
 
         // 1. Check for the first relevant discrete trip (Bus)
-        // Equivalent to: bisect_left(self.buses, t, key=lambda x: x.d)
         auto it = std::lower_bound(discreteTrips.begin(), discreteTrips.end(), departureTime,
             [](const DiscreteTrip& trip, int time) {
                 return trip.departureTime < time;
@@ -93,7 +93,6 @@ struct ArrivalTimeFunction {
     }
 
     // Compute arrival time when a boarding buffer is required before boarding a scheduled trip.
-    // The buffer applies ONLY to discrete trips (boarding vehicles), not to walking transfers.
     inline int computeArrivalTimeWithBoardBuffer(const int departureTime, const int boardBuffer) const noexcept {
         int minArrivalTime = never;
 
@@ -172,7 +171,6 @@ private:
         ::Attribute<Function, ArrivalTimeFunction>
     >;
 
-    // FIX: Changed Meta::Attribute to ::Attribute to reference the global definition.
     using TDVertexAttributes = Meta::List<
         ::Attribute<BeginOut, Edge>,
         ::Attribute<OutDegree, size_t>,
@@ -183,11 +181,46 @@ private:
 
     UnderlyingGraph graph;
     // Per-vertex minimum transfer time (change time) used as implicit departure buffer when boarding trips.
-    // Initialized from Intermediate::Data::stops; defaults to 0 for non-stop vertices.
     std::vector<int> minTransferTimeByVertex;
+
+    // Optimized storage for O(1) trip continuation
+    struct TripLeg {
+        int arrivalTime;
+        Vertex stopId;
+    };
+
+    std::vector<uint32_t> tripOffsets;     // tripId -> start index in allTripLegs
+    std::vector<TripLeg> allTripLegs;      // Contiguous array of all trip stops
 
 public:
     TimeDependentGraph() = default;
+
+    // Returns true if a next stop exists, populates vertex and arrival
+    inline bool getNextStop(const int tripId, const uint16_t currentStopIndex, Vertex& outStop, int& outArrival) const noexcept {
+        if (tripId < 0 || (size_t)tripId + 1 >= tripOffsets.size()) return false;
+        
+        const uint32_t currentTripStart = tripOffsets[tripId];
+        const uint32_t nextTripStart = tripOffsets[tripId + 1];
+        
+        // The next stop is at currentStopIndex + 1 relative to the trip start
+        const uint32_t absoluteIndex = currentTripStart + currentStopIndex + 1;
+        
+        if (absoluteIndex < nextTripStart) {
+            const TripLeg& leg = allTripLegs[absoluteIndex];
+            outStop = leg.stopId;
+            outArrival = leg.arrivalTime;
+            return true;
+        }
+        return false;
+    }
+    
+    inline size_t getNumStopEvents() const noexcept {
+        return allTripLegs.size();
+    }
+
+    inline uint32_t getTripOffset(const int tripId) const noexcept {
+        return tripOffsets[tripId];
+    }
 
     /**
      * @brief Constructs a TimeDependentGraph directly from Intermediate::Data
@@ -224,18 +257,41 @@ public:
                 const Vertex v = Vertex(stopEventV.stopId);
 
                 // Apply implicit departure buffer times (matching MR's useImplicitDepartureBufferTimes()).
-                // The buffer at departure stop u is subtracted from departure time.
-                // This means: eligible to board if arrival <= shiftedDeparture
-                // Which equals: eligible if arrival + buffer <= originalDeparture
                 const int buffer = (u < inter.stops.size()) ? inter.stops[u].minTransferTime : 0;
+
                 tripSegments[{u, v}].emplace_back(DiscreteTrip{
                     .departureTime = stopEventU.departureTime - buffer,  // Implicit buffer
                     .arrivalTime = stopEventV.arrivalTime,
-                    .tripId = (int)tripId
+                    .tripId = (int)tripId,
+                    .departureStopIndex = (uint16_t)i // Store the index
                 });
             }
         }
         std::cout << " done (" << tripSegments.size() << " unique segments)" << std::endl;
+
+        // --- BUILD O(1) LOOKUP TABLE ---
+        tdGraph.tripOffsets.reserve(inter.trips.size() + 1);
+        size_t totalStops = 0;
+        
+        for (const auto& trip : inter.trips) {
+            tdGraph.tripOffsets.push_back(totalStops);
+            totalStops += trip.stopEvents.size();
+        }
+        tdGraph.tripOffsets.push_back(totalStops); // Sentinel
+
+        tdGraph.allTripLegs.resize(totalStops);
+        for (size_t tripId = 0; tripId < inter.trips.size(); ++tripId) {
+            const Intermediate::Trip& trip = inter.trips[tripId];
+            const size_t baseOffset = tdGraph.tripOffsets[tripId];
+            
+            for (size_t i = 0; i < trip.stopEvents.size(); ++i) {
+                tdGraph.allTripLegs[baseOffset + i] = { 
+                    trip.stopEvents[i].arrivalTime, 
+                    Vertex(trip.stopEvents[i].stopId) 
+                };
+            }
+        }
+        // -------------------------------
 
         // 3. Build transfer map more efficiently
         std::unordered_map<std::pair<Vertex, Vertex>, int, VertexPairHash> minTransferTimes;
@@ -333,10 +389,6 @@ public:
      */
     inline int getArrivalTime(const Edge edge, const int departureTime) const noexcept {
         const ArrivalTimeFunction& f = graph.get(Function, edge);
-        // Do NOT apply a generic per-stop boarding buffer here, as that would incorrectly penalize
-        // continuing on the same vehicle across consecutive stops. Buffer semantics are handled in MR by
-        // implicit departure times and require stateful modeling to apply only on transfers. For TD-Dijkstra
-        // (single-label), we use the pure arrival-time function without buffer to avoid over-constraining.
         return f.computeArrivalTime(departureTime);
     }
 
@@ -370,6 +422,7 @@ public:
     inline void serialize(const std::string& fileName) const noexcept {
         // Persist the underlying dynamic graph (includes per-edge ArrivalTimeFunction attribute)
         graph.writeBinary(fileName);
+        IO::serialize(fileName + ".data", tripOffsets, allTripLegs);
     }
 
     /**
@@ -379,6 +432,7 @@ public:
     inline void deserialize(const std::string& fileName) noexcept {
         // Load the underlying dynamic graph (includes per-edge ArrivalTimeFunction attribute)
         graph.readBinary(fileName);
+        IO::deserialize(fileName + ".data", tripOffsets, allTripLegs);
     }
 
     /**
