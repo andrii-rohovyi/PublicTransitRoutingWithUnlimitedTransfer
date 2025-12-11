@@ -640,16 +640,13 @@ public:
                   << graph.numEdges() << " edges" << std::endl;
 
         // Create the TD-Dijkstra algorithm instance
-        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
+        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         TDDijkstra algorithm(graph);
 
         const size_t n = getParameter<size_t>("Number of queries");
         const std::vector<VertexQuery> queries = generateRandomVertexQueries(graph.numVertices(), n);
 
         // Statistics accumulators
-        size_t totalSettles = 0;
-        size_t totalRelaxes = 0;
-        double totalTime = 0.0;
         size_t reachableCount = 0;
         int totalArrivalTime = 0;
 
@@ -658,10 +655,6 @@ public:
         // Run all queries
         for (const VertexQuery& query : queries) {
             algorithm.run(query.source, query.departureTime, query.target);
-            
-            totalSettles += algorithm.getSettleCount();
-            totalRelaxes += algorithm.getRelaxCount();
-            totalTime += algorithm.getElapsedMilliseconds();
             
             if (algorithm.reachable(query.target)) {
                 reachableCount++;
@@ -674,17 +667,13 @@ public:
         std::cout << "Total queries: " << n << std::endl;
         std::cout << "Reachable targets: " << reachableCount << " (" 
                   << String::prettyDouble(100.0 * reachableCount / n) << "%)" << std::endl;
-        std::cout << "\nAverage per query:" << std::endl;
-        std::cout << "  Vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
-        std::cout << "  Edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
-        std::cout << "  Query time: " << String::prettyDouble(totalTime / n) << " ms" << std::endl;
+        
+        algorithm.getProfiler().printStatistics();
         
         if (reachableCount > 0) {
             std::cout << "  Arrival time (reachable): " 
                       << String::prettyInt(totalArrivalTime / reachableCount) << std::endl;
         }
-        
-        std::cout << "\nTotal execution time: " << String::prettyDouble(totalTime) << " ms" << std::endl;
     }
 };
 
@@ -773,7 +762,7 @@ public:
         std::cout << "Time-dependent graph loaded: " << graph.numVertices() << " vertices, "
                   << graph.numEdges() << " edges" << std::endl;
 
-        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
+        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         
         // Pass intermediateData to constructor
         TDDijkstra algorithm(graph);
@@ -781,18 +770,12 @@ public:
         const size_t n = getParameter<size_t>("Number of queries");
         const std::vector<VertexQuery> queries = generateRandomVertexQueries(graph.numVertices(), n);
 
-        size_t totalSettles = 0;
-        size_t totalRelaxes = 0;
-        double totalTime = 0.0;
         size_t reachableCount = 0;
         int totalArrivalTime = 0;
 
         std::cout << "\nRunning " << n << " TD-Dijkstra queries..." << std::endl;
         for (const VertexQuery& query : queries) {
             algorithm.run(query.source, query.departureTime, query.target);
-            totalSettles += algorithm.getSettleCount();
-            totalRelaxes += algorithm.getRelaxCount();
-            totalTime += algorithm.getElapsedMilliseconds();
             if (algorithm.reachable(query.target)) {
                 reachableCount++;
                 totalArrivalTime += algorithm.getArrivalTime(query.target);
@@ -803,15 +786,13 @@ public:
         std::cout << "Total queries: " << n << std::endl;
         std::cout << "Reachable targets: " << reachableCount << " ("
                   << String::prettyDouble(100.0 * reachableCount / n) << "%)" << std::endl;
-        std::cout << "\nAverage per query:" << std::endl;
-        std::cout << "  Vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
-        std::cout << "  Edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
-        std::cout << "  Query time: " << String::prettyDouble(totalTime / n) << " ms" << std::endl;
+        
+        algorithm.getProfiler().printStatistics();
+        
         if (reachableCount > 0) {
             std::cout << "  Arrival time (reachable): "
                       << String::prettyInt(totalArrivalTime / (int)reachableCount) << std::endl;
         }
-        std::cout << "\nTotal execution time: " << String::prettyDouble(totalTime) << " ms" << std::endl;
     }
 };
 
@@ -952,20 +933,15 @@ public:
         // --- Run TD-Dijkstra (stateful) ---
         std::cout << "\n--- Running TD-Dijkstra (stateful) ---" << std::endl;
 
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, false>;
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false>;
         // Pass intermediateData as the second argument
         TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops());
-
-        size_t totalSettles = 0;
-        size_t totalRelaxes = 0;
 
         Timer tdTimer;
         for (size_t i = 0; i < queries.size(); ++i) {
             const VertexQuery& query = queries[i];
             algorithm_td.run(query.source, query.departureTime, query.target);
             results_td.push_back(algorithm_td.getArrivalTime(query.target));
-            totalSettles += algorithm_td.getSettleCount();
-            totalRelaxes += algorithm_td.getRelaxCount();
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
                 std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries (" 
                           << String::msToString(tdTimer.elapsedMilliseconds()) << ")" << std::flush;
@@ -974,9 +950,7 @@ public:
         std::cout << std::endl;
         
         std::cout << "--- Statistics TD-Dijkstra (stateful) ---" << std::endl;
-        std::cout << "Total queries: " << n << std::endl;
-        std::cout << "Avg. vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
-        std::cout << "Avg. edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
+        algorithm_td.getProfiler().printStatistics();
 
         // --- Compare results ---
         std::cout << "\n--- Comparison Results ---" << std::endl;
@@ -1070,19 +1044,14 @@ public:
         // --- Run TD-Dijkstra (stateful) with CoreCH ---
         std::cout << "\n--- Running TD-Dijkstra (stateful) with CoreCH ---" << std::endl;
 
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, true>;
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops(), &ch);
-
-        size_t totalSettles = 0;
-        size_t totalRelaxes = 0;
 
         Timer tdTimer;
         for (size_t i = 0; i < queries.size(); ++i) {
             const VertexQuery& query = queries[i];
             algorithm_td.run(query.source, query.departureTime, query.target);
             results_td.push_back(algorithm_td.getArrivalTime(query.target));
-            totalSettles += algorithm_td.getSettleCount();
-            totalRelaxes += algorithm_td.getRelaxCount();
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
                 std::cout << "\r  TD: " << (i + 1) << "/" << n << " queries (" 
                           << String::msToString(tdTimer.elapsedMilliseconds()) << ")" << std::flush;
@@ -1091,9 +1060,7 @@ public:
         std::cout << std::endl;
         
         std::cout << "--- Statistics TD-Dijkstra (stateful) ---" << std::endl;
-        std::cout << "Total queries: " << n << std::endl;
-        std::cout << "Avg. vertices settled: " << String::prettyDouble((double)totalSettles / n) << std::endl;
-        std::cout << "Avg. edges relaxed: " << String::prettyDouble((double)totalRelaxes / n) << std::endl;
+        algorithm_td.getProfiler().printStatistics();
 
         // --- Compare results ---
         std::cout << "\n--- Comparison Results ---" << std::endl;
@@ -1465,8 +1432,8 @@ public:
 
         // 2. Run WITHOUT Pruning (TARGET_PRUNING = false)
         std::cout << "\n--- Running without Target Pruning ---" << std::endl;
-        // Template Args: <Graph, Debug=false, TargetPruning=false>
-        using TDDijkstraNoPrune = TimeDependentDijkstraStateful<TimeDependentGraph, false, false>;
+        // Template Args: <Graph, Profiler, Debug=false, TargetPruning=false>
+        using TDDijkstraNoPrune = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, false>;
         
         // Constructor: graph, numStops (0=auto), chPointer
         TDDijkstraNoPrune algo_no_pruning(graph, 0, chPointer);
@@ -1476,14 +1443,12 @@ public:
             results_no_pruning.push_back(algo_no_pruning.getArrivalTime(query.target));
         }
         std::cout << "--- Statistics (No Pruning) ---" << std::endl;
-        std::cout << "Settles: " << String::prettyDouble((double)algo_no_pruning.getSettleCount() / n) << std::endl;
-        std::cout << "Relaxes: " << String::prettyDouble((double)algo_no_pruning.getRelaxCount() / n) << std::endl;
-        std::cout << "Time:    " << String::prettyDouble(algo_no_pruning.getElapsedMilliseconds() / n) << " ms" << std::endl;
+        algo_no_pruning.getProfiler().printStatistics();
 
         // 3. Run WITH Pruning (TARGET_PRUNING = true)
         std::cout << "\n--- Running with Target Pruning ---" << std::endl;
-        // Template Args: <Graph, Debug=false, TargetPruning=true>
-        using TDDijkstraPrune = TimeDependentDijkstraStateful<TimeDependentGraph, false, true>;
+        // Template Args: <Graph, Profiler, Debug=false, TargetPruning=true>
+        using TDDijkstraPrune = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         
         TDDijkstraPrune algo_pruning(graph, 0, chPointer);
 
@@ -1492,9 +1457,7 @@ public:
             results_pruning.push_back(algo_pruning.getArrivalTime(query.target));
         }
         std::cout << "--- Statistics (Pruning) ---" << std::endl;
-        std::cout << "Settles: " << String::prettyDouble((double)algo_pruning.getSettleCount() / n) << std::endl;
-        std::cout << "Relaxes: " << String::prettyDouble((double)algo_pruning.getRelaxCount() / n) << std::endl;
-        std::cout << "Time:    " << String::prettyDouble(algo_pruning.getElapsedMilliseconds() / n) << " ms" << std::endl;
+        algo_pruning.getProfiler().printStatistics();
 
         // 4. Compare Results
         std::cout << "\n--- Comparison Results ---" << std::endl;

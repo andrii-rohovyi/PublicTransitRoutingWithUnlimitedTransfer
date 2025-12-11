@@ -13,15 +13,17 @@
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../Algorithms/CH/CH.h"
 #include "../../Algorithms/CH/Query/CHQuery.h"
+#include "Profiler.h"
 
 // A two-state time-dependent Dijkstra that applies per-stop min transfer time (buffer)
 // only when boarding a scheduled trip from an "at-stop" state. Continuing in-vehicle
 // does not incur the buffer. Walking never incurs a buffer.
 
-template<typename GRAPH, bool DEBUG = false, bool TARGET_PRUNING = true>
+template<typename GRAPH, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
 class TimeDependentDijkstraStateful {
 public:
     using Graph = GRAPH;
+    using Profiler = PROFILER;
     static constexpr bool Debug = DEBUG;
     using CoreCHInitialTransfers = CH::Query<CHGraph, true, false, true>;
 
@@ -72,6 +74,7 @@ public:
         }
 
     inline void clear() noexcept {
+        profiler.startPhase(TDD::PHASE_CLEAR);
         Q.clear();
         timeStamp++;
         settleCount = 0;
@@ -86,6 +89,7 @@ public:
         touchedGlobalIndices.clear();
         
         labelPool.clear();
+        profiler.donePhase(TDD::PHASE_CLEAR);
     }
 
     inline void addSource(const Vertex s, const int time) noexcept {
@@ -94,14 +98,17 @@ public:
             L.arrivalTime = time;
             L.reachedByWalking = true;
             Q.update(&L);
+            profiler.countMetric(TDD::METRIC_ENQUEUES);
         }
     }
 
     template<typename STOP = NO_OPERATION>
     inline void run(const Vertex source, const int departureTime, const Vertex target = noVertex, const STOP& stop = NoOperation) noexcept {
+        profiler.start();
         clear();
         targetVertex = target;  
         
+        profiler.startPhase(TDD::PHASE_INITIALIZATION);
         if (initialTransfers) {
             initialTransfers->run(source, target);
             for (const Vertex stop : initialTransfers->getForwardPOIs()) {
@@ -117,7 +124,10 @@ public:
         } else {
             addSource(source, departureTime);
         }
+        profiler.donePhase(TDD::PHASE_INITIALIZATION);
+        
         runRelaxation(target, stop);
+        profiler.done();
     }
 
     inline bool reachable(const Vertex v) const noexcept {
@@ -209,18 +219,21 @@ private:
 
     template<typename STOP>
     inline void runRelaxation(const Vertex target, const STOP& stop) noexcept {
+        profiler.startPhase(TDD::PHASE_MAIN_LOOP);
         while (!Q.empty()) {
             const Label* cur = Q.extractFront();
             const Vertex u = cur->vertex;
             const State s = cur->state;
 
             settleCount++;
+            profiler.countMetric(TDD::METRIC_SETTLES);
             
             // Global Target Pruning
             if constexpr (TARGET_PRUNING) {
                 if (target != noVertex) {
                     const Label& targetLabel = atStopLabels[target];
                     if (targetLabel.timeStamp == timeStamp && cur->arrivalTime >= targetLabel.arrivalTime) {
+                        profiler.countMetric(TDD::METRIC_PRUNED_LABELS);
                         continue; 
                     }
                 }
@@ -319,10 +332,12 @@ private:
                 }
             }
         }
+        profiler.donePhase(TDD::PHASE_MAIN_LOOP);
     }
 
     inline void relaxTransit(const Vertex v, const Vertex parent, const State parentState, const int newTime, const int tripId, const uint16_t stopIndex) noexcept {
         relaxCount++;
+        profiler.countMetric(TDD::METRIC_RELAXES_TRANSIT);
         
         // O(1) Absolute Index Calculation
         const uint32_t absIndex = graph.getTripOffset(tripId) + stopIndex;
@@ -349,11 +364,13 @@ private:
             L->tripId = tripId;
             L->stopIndex = stopIndex;
             Q.update(L);
+            profiler.countMetric(TDD::METRIC_ENQUEUES);
         }
     }
 
     inline void relaxWalking(const Vertex v, const Vertex parent, const State parentState, const int newTime, const bool reachedByWalking, const int parentTripId) noexcept {
         relaxCount++;
+        profiler.countMetric(TDD::METRIC_RELAXES_WALKING);
         Label& L = getAtStopLabel(v);
         if (L.arrivalTime > newTime) {
             L.arrivalTime = newTime;
@@ -362,7 +379,13 @@ private:
             L.reachedByWalking = reachedByWalking;
             L.tripId = parentTripId; 
             Q.update(&L);
+            profiler.countMetric(TDD::METRIC_ENQUEUES);
         }
+    }
+
+public:
+    inline const Profiler& getProfiler() const noexcept {
+        return profiler;
     }
 
 private:
@@ -379,4 +402,5 @@ private:
     Timer timer;
     std::unique_ptr<CoreCHInitialTransfers> initialTransfers;
     Vertex targetVertex;
+    Profiler profiler;
 };

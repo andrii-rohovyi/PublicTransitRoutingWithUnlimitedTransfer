@@ -100,7 +100,7 @@ public:
 
         // Run TD-Dijkstra (stateful)
         std::cout << "\n=== Running TD-Dijkstra (Stateful) with CoreCH ===" << std::endl;
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, true>;
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, true>;
         // Use CoreCH for initial transfers (matching MR semantics)
         TDDijkstraStateful algorithmTD(graph, raptorData.numberOfStops(), &ch);
         
@@ -244,7 +244,7 @@ public:
 
         // Run TD-Dijkstra (stateful)
         std::cout << "\n=== Running TD-Dijkstra (Stateful) with CoreCH ===" << std::endl;
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, true>;
+        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, true>;
         TDDijkstraStateful algorithmTD(graph, raptorData.numberOfStops(), &ch);
         
         algorithmTD.run(source, departureTime, target);
