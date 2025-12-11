@@ -234,16 +234,22 @@ private:
             // --- EXPANSION: FROM VEHICLE ---
             if (s == State::OnVehicle) {
                 // 1. Alight: OnVehicle -> AtStop
+                // This queues the 'AtStop' state, which will handle all transfers/walking
+                // when it is popped.
                 relaxWalking(u, u, s, t, false, cur->tripId);
 
                 // 2. Continue: OnVehicle -> OnVehicle (O(1) Optimization)
                 Vertex nextStop;
                 int nextArrival;
                 
-                // Use the O(1) graph accessor
                 if (graph.getNextStop(cur->tripId, cur->stopIndex, nextStop, nextArrival)) {
                     relaxTransit(nextStop, u, s, nextArrival, cur->tripId, cur->stopIndex + 1);
                 }
+
+                // OPTIMIZATION: Stop here! 
+                // We don't need to scan outgoing edges because we can't board a different 
+                // bus or walk anywhere without alighting first (which we just handled).
+                continue; 
             }
             
             // --- EXPANSION: CH WALKING SHORTCUTS ---
@@ -263,11 +269,9 @@ private:
                 if (u < numberOfStops && s == State::AtStop) {
                     const auto& atf = graph.get(Function, e);
                     
-                    // Implicit buffers are handled by graph data. Search for first trip >= t.
                     auto it = std::lower_bound(atf.discreteTrips.begin(), atf.discreteTrips.end(), t,
                         [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
                     
-                    // A. Initialize Target Upper Bound
                     int targetUpperBound = never;
                     if constexpr (TARGET_PRUNING) {
                         if (target != noVertex) {
@@ -278,25 +282,19 @@ private:
                         }
                     }
 
-                    // B. Initialize Local Upper Bound
                     int bestLocalArrival = never;
                     const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
 
-                    // C. Iterate
                     for (; it != atf.discreteTrips.end(); ++it) {
-                        
-                        // --- PRUNING BLOCK ---
                         const size_t idx = std::distance(atf.discreteTrips.begin(), it);
                         const int minPossibleArrival = atf.suffixMinArrival[idx];
 
-                        // Local Pruning
                         if (bestLocalArrival != never) {
                             if (minPossibleArrival > bestLocalArrival + bufferAtV) {
                                 break; 
                             }
                         }
 
-                        // Target Pruning
                         if constexpr (TARGET_PRUNING) {
                             if (targetUpperBound != never) {
                                 if (minPossibleArrival >= targetUpperBound) {
@@ -304,14 +302,11 @@ private:
                                 }
                             }
                         }
-                        // ---------------------
 
-                        // Update local best
                         if (it->arrivalTime < bestLocalArrival) {
                             bestLocalArrival = it->arrivalTime;
                         }
 
-                        // O(1) Index Lookup
                         const uint16_t nextStopIndex = it->departureStopIndex + 1;
                         relaxTransit(v, u, s, it->arrivalTime, it->tripId, nextStopIndex);
                     }
