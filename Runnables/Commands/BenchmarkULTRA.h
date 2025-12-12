@@ -566,6 +566,7 @@ public:
         addParameter("RAPTOR input file");
         addParameter("CH data");
         addParameter("Number of queries");
+        addParameter("Pruning rule (0 or 1)");
     }
 
     virtual void execute() noexcept {
@@ -573,18 +574,29 @@ public:
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.printInfo();
         CH::CH ch(getParameter("CH data"));
-        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> algorithm(raptorData, ch);
 
         const size_t n = getParameter<size_t>("Number of queries");
+        const int pruningRule = getParameter<int>("Pruning rule (0 or 1)");
         const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
 
-        double numJourneys = 0;
-        for (const VertexQuery& query : queries) {
-            algorithm.run(query.source, query.departureTime, query.target);
-            numJourneys += algorithm.getJourneys().size();
+        auto runBenchmark = [&](auto& algorithm) {
+            double numJourneys = 0;
+            for (const VertexQuery& query : queries) {
+                algorithm.run(query.source, query.departureTime, query.target);
+                numJourneys += algorithm.getJourneys().size();
+            }
+            algorithm.getProfiler().printStatistics();
+            std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys/n) << std::endl;
+        };
+
+        if (pruningRule == 1) {
+            raptorData.sortTransferGraphEdgesByTravelTime();
+            RAPTOR::DijkstraRAPTOR_prune<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> algorithm(raptorData, ch);
+            runBenchmark(algorithm);
+        } else {
+            RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> algorithm(raptorData, ch);
+            runBenchmark(algorithm);
         }
-        algorithm.getProfiler().printStatistics();
-        std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys/n) << std::endl;
     }
 };
 
@@ -595,6 +607,7 @@ public:
         ParameterizedCommand(shell, "runDijkstraRAPTORQueriesNoCH", "Runs the given number of random Dijkstra RAPTOR queries (without CH).") {
         addParameter("RAPTOR input file");
         addParameter("Number of queries");
+        addParameter("Pruning rule (0 or 1)");
     }
 
     virtual void execute() noexcept {
@@ -605,20 +618,31 @@ public:
         std::cout << "Creating reverse network..." << std::endl;
         RAPTOR::Data reverseRaptorData = raptorData.reverseNetwork();
         std::cout << "Reverse network created." << std::endl;
-        
-        RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
-            algorithm(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
 
         const size_t n = getParameter<size_t>("Number of queries");
+        const int pruningRule = getParameter<int>("Pruning rule (0 or 1)");
         const std::vector<VertexQuery> queries = generateRandomVertexQueries(raptorData.transferGraph.numVertices(), n);
 
-        double numJourneys = 0;
-        for (const VertexQuery& query : queries) {
-            algorithm.run(query.source, query.departureTime, query.target);
-            numJourneys += algorithm.getJourneys().size();
+        auto runBenchmark = [&](auto& algorithm) {
+            double numJourneys = 0;
+            for (const VertexQuery& query : queries) {
+                algorithm.run(query.source, query.departureTime, query.target);
+                numJourneys += algorithm.getJourneys().size();
+            }
+            algorithm.getProfiler().printStatistics();
+            std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys/n) << std::endl;
+        };
+
+        if (pruningRule == 1) {
+            raptorData.sortTransferGraphEdgesByTravelTime();
+            RAPTOR::DijkstraRAPTOR_prune<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+                algorithm(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
+            runBenchmark(algorithm);
+        } else {
+            RAPTOR::DijkstraRAPTOR<RAPTOR::DijkstraInitialTransfers, RAPTOR::AggregateProfiler, true, false> 
+                algorithm(raptorData, raptorData.transferGraph, reverseRaptorData.transferGraph);
+            runBenchmark(algorithm);
         }
-        algorithm.getProfiler().printStatistics();
-        std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys/n) << std::endl;
     }
 };
 
