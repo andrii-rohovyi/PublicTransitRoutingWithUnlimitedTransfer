@@ -22,7 +22,7 @@ using TransferGraph = ::TransferGraph;
 
 
 // =========================================================================
-// 1. Core Time-Dependent Data Structure (Discrete Schedule Arrival Function)
+// 1. Core Time-Dependent Data Structure
 // =========================================================================
 
 struct DiscreteTrip {
@@ -39,15 +39,11 @@ struct DiscreteTrip {
     }
 };
 
-// Replaced ArrivalTimeFunction with a lightweight handle
 struct EdgeTripsHandle {
     uint32_t firstTripIndex;
     uint32_t tripCount;
     int walkTime = never;
-    // Suffix min is stored in a parallel global array or interleaved?
-    // To keep locality high, we might want it interleaved or parallel.
-    // For now, let's keep it simple: global suffix min array.
-    uint32_t firstSuffixIndex; // Index into global suffix min array
+    uint32_t firstSuffixIndex; 
 };
 
 // =========================================================================
@@ -68,7 +64,7 @@ private:
         ::Attribute<Valid, bool>,
         ::Attribute<IncomingEdgePointer, size_t>,
         ::Attribute<ReverseEdge, Edge>,
-        ::Attribute<Function, EdgeTripsHandle> // Optimized Handle
+        ::Attribute<Function, EdgeTripsHandle> 
     >;
 
     using TDVertexAttributes = Meta::List<
@@ -136,6 +132,40 @@ public:
 
     inline const int* getSuffixMinBegin(const EdgeTripsHandle& h) const noexcept {
         return &allSuffixMinArrivals[h.firstSuffixIndex];
+    }
+
+    // --- RECONSTRUCTION HELPER ---
+    // Finds a tripId that goes from u -> v, departing >= minDepTime and arriving == atArrTime.
+    // Used by getPath() to recover the tripId since we don't store it during the hot scan.
+    struct FoundTrip {
+        int tripId = -1;
+    };
+
+    inline FoundTrip findMatchingTrip(Vertex u, Vertex v, int minDepTime, int atArrTime) const noexcept {
+        // Iterate edges from u to find connection to v
+        for (const Edge e : graph.edgesFrom(u)) {
+            if (graph.get(ToVertex, e) == v) {
+                const EdgeTripsHandle& h = graph.get(Function, e);
+                const DiscreteTrip* begin = getTripsBegin(h);
+                const DiscreteTrip* end = getTripsEnd(h);
+
+                // Use lower_bound to find potential trips efficiently
+                auto it = std::lower_bound(begin, end, minDepTime,
+                    [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
+
+                for (; it != end; ++it) {
+                    // Check if this trip arrives exactly at the recorded time
+                    if (it->arrivalTime == atArrTime) {
+                         return {it->tripId};
+                    }
+                    // Optimization: If trip arrives later than what we recorded, 
+                    // and since trips are usually somewhat ordered, we might stop?
+                    // But strictly speaking, departure time sort doesn't guarantee arrival time sort (overtaking).
+                    // However, we are looking for an exact match.
+                }
+            }
+        }
+        return {-1};
     }
 
     inline static TimeDependentGraph FromIntermediate(const Intermediate::Data& inter) noexcept {
@@ -216,8 +246,7 @@ public:
         std::cout << "Creating time-dependent edges (flattened)..." << std::flush;
         size_t edgeCount = 0;
         
-        // Reserve approximate memory
-        tdGraph.allDiscreteTrips.reserve(tripSegments.size() * 5); // Heuristic
+        tdGraph.allDiscreteTrips.reserve(tripSegments.size() * 5); 
         tdGraph.allSuffixMinArrivals.reserve(tripSegments.size() * 5);
 
         for (auto& pair : tripSegments) {
@@ -231,16 +260,13 @@ public:
                 minTransferTimes.erase(transferIt);
             }
 
-            // Sort trips
             std::sort(trips.begin(), trips.end());
 
-            // Add to flattened arrays
             uint32_t firstTripIdx = tdGraph.allDiscreteTrips.size();
             uint32_t firstSuffixIdx = tdGraph.allSuffixMinArrivals.size();
             
             tdGraph.allDiscreteTrips.insert(tdGraph.allDiscreteTrips.end(), trips.begin(), trips.end());
             
-            // Compute suffix mins directly into global array
             size_t startSize = tdGraph.allSuffixMinArrivals.size();
             tdGraph.allSuffixMinArrivals.resize(startSize + trips.size());
             if (!trips.empty()) {
@@ -302,7 +328,6 @@ public:
         
         int minArrivalTime = never;
         
-        // Manual binary search over flattened array
         auto begin = allDiscreteTrips.begin() + h.firstTripIndex;
         auto end = begin + h.tripCount;
         auto it = std::lower_bound(begin, end, departureTime,
