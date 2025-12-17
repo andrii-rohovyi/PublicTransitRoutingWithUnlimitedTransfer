@@ -659,6 +659,20 @@ public:
         // Load intermediate data and build time-dependent graph
         std::cout << "Loading intermediate data and building time-dependent graph..." << std::endl;
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+
+        // --- DIAGNOSTIC START ---
+        int stopsWithBuffer = 0;
+        int maxBuffer = 0;
+        for (const auto& stop : intermediateData.stops) {
+            if (stop.minTransferTime > 0) {
+                stopsWithBuffer++;
+                maxBuffer = std::max(maxBuffer, stop.minTransferTime);
+            }
+        }
+        std::cout << " DIAGNOSTIC: Stops with Buffer > 0: " << stopsWithBuffer << std::endl;
+        std::cout << " DIAGNOSTIC: Max Buffer: " << maxBuffer << " seconds" << std::endl;
+        // --- DIAGNOSTIC END ---
+
         TimeDependentGraph graph = TimeDependentGraph::FromIntermediate(intermediateData);
         std::cout << "Time-dependent graph created: " << graph.numVertices() << " vertices, " 
                   << graph.numEdges() << " edges" << std::endl;
