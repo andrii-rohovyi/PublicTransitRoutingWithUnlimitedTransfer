@@ -117,6 +117,10 @@ public:
         std::stable_sort(connections.begin(), connections.end());
     }
 
+    inline void sortTransferGraphEdgesByTravelTime() noexcept {
+        transferGraph.sortEdges(TravelTime);
+    }
+
     inline void sortConnectionsDescending() noexcept {
         std::stable_sort(connections.begin(), connections.end(), [](const Connection& a, const Connection& b){
             return b < a;
@@ -305,6 +309,18 @@ public:
         permutate(permutation.extend(transferGraph.numVertices()), permutation);
     }
 
+    inline ConnectionSoA toConnectionsSoA() const noexcept {
+        ConnectionSoA soa(connections.size());
+        for (size_t i = 0; i < connections.size(); ++i) {
+            soa.departureStopIds[i] = connections[i].departureStopId;
+            soa.arrivalStopIds[i] = connections[i].arrivalStopId;
+            soa.departureTimes[i] = connections[i].departureTime;
+            soa.arrivalTimes[i] = connections[i].arrivalTime;
+            soa.tripIds[i] = connections[i].tripId;
+        }
+        return soa;
+    }
+
     inline void applyStopOrder(const Order& order) noexcept {
         applyStopPermutation(Permutation(Construct::Invert, order));
     }
@@ -411,6 +427,62 @@ public:
 
     TransferGraph transferGraph;
 
+};
+
+    class DataSoA {
+public:
+    DataSoA() = default;
+
+    // A special constructor to create DataSoA from a standard Data object
+    DataSoA(const Data& data) :
+        stopData(data.stopData),
+        tripData(data.tripData),
+        transferGraph(data.transferGraph)
+    {
+        connections.resize(data.numberOfConnections());
+        for (size_t i = 0; i < data.numberOfConnections(); ++i) {
+            const Connection& c = data.connections[i];
+            connections.departureStopIds[i] = c.departureStopId;
+            connections.arrivalStopIds[i] = c.arrivalStopId;
+            connections.departureTimes[i] = c.departureTime;
+            connections.arrivalTimes[i] = c.arrivalTime;
+            connections.tripIds[i] = c.tripId;
+        }
+    }
+
+    // You can add more factory methods here if needed, like FromIntermediate, etc., but they would mirror the logic of the standard Data class.
+
+public:
+    inline size_t numberOfStops() const noexcept { return stopData.size(); }
+    inline bool isStop(const Vertex stop) const noexcept { return stop < numberOfStops(); }
+    inline Range<StopId> stops() const noexcept { return Range<StopId>(StopId(0), StopId(numberOfStops())); }
+
+    inline size_t numberOfTrips() const noexcept { return tripData.size(); }
+    inline bool isTrip(const TripId tripId) const noexcept { return tripId < numberOfTrips(); }
+    inline Range<TripId> tripIds() const noexcept { return Range<TripId>(TripId(0), TripId(numberOfTrips())); }
+
+    inline size_t numberOfConnections() const noexcept { return connections.size(); }
+    inline bool isConnection(const ConnectionId connectionId) const noexcept { return connectionId < numberOfConnections(); }
+    inline Range<ConnectionId> connectionIds() const noexcept { return Range<ConnectionId>(ConnectionId(0), ConnectionId(numberOfConnections())); }
+
+    inline int minTransferTime(const StopId stop) const noexcept { return stopData[stop].minTransferTime; }
+
+    inline void applyStopPermutation(const Permutation& permutation) noexcept {
+        connections.applyStopPermutation(permutation);
+        permutation.permutate(stopData);
+    }
+
+    // ... add other relevant methods from your original Data class,
+    // rewritten to use the ConnectionSoA member `connections`.
+    // For example, printInfo, isCombinable, etc.
+    // The sorting methods would also need to be implemented here, similar to the
+    // previous example using permutations on the indices.
+
+public:
+    ConnectionSoA connections;
+    std::vector<Stop> stopData;
+    std::vector<Trip> tripData;
+    TransferGraph transferGraph;
 };
 
 }

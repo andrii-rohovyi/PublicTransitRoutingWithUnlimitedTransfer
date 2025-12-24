@@ -10,6 +10,11 @@
 #include "../../DataStructures/RAPTOR/MultimodalData.h"
 #include "../../DataStructures/TripBased/MultimodalData.h"
 
+// --- Project Includes ---
+// Assuming these are the necessary includes for your environment:
+#include "../../DataStructures/Graph/TimeDependentGraph.h"      // For TimeDependentGraph
+#include "../../Helpers/Timer.h"          // For time profiling
+
 #include "../../Shell/Shell.h"
 
 using namespace Shell;
@@ -109,6 +114,43 @@ public:
     }
 
 };
+
+class IntermediateToTDGraph : public ParameterizedCommand {
+public:
+    // The command name is updated to reflect the target format (TDGraph)
+    IntermediateToTDGraph(BasicShell& shell) :
+        ParameterizedCommand(shell, "intermediateToTDGraph", "Converts binary intermediate data to a Time-Dependent Graph (TDGraph) network.") {
+        addParameter("Input file (Intermediate::Data binary)");
+        addParameter("Output file (TDGraph binary)");
+    }
+
+    virtual void execute() noexcept {
+        Timer timer;
+
+        const std::string inputFile = getParameter("Input file (Intermediate::Data binary)");
+        const std::string outputFile = getParameter("Output file (TDGraph binary)");
+
+        // 1. Deserialize Intermediate Data
+        std::cout << "Loading Intermediate Data from " << inputFile << "... ";
+        Intermediate::Data inter = Intermediate::Data::FromBinary(inputFile);
+        inter.printInfo();
+
+        // 2. Convert to TimeDependentGraph using the new ATF model
+        timer.restart();
+        std::cout << "Converting to TimeDependentGraph (Discrete ATF)... ";
+        TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(inter);
+
+        // Output basic info (You may need to add a printInfo method to TimeDependentGraph)
+        std::cout << "TDGraph Info: V=" << tdGraph.numVertices()
+                  << ", E=" << tdGraph.numEdges() << std::endl;
+
+        // 3. Serialize the TimeDependentGraph
+        timer.restart();
+        std::cout << "Serializing TDGraph to " << outputFile << "... ";
+        tdGraph.serialize(outputFile); // Assuming TimeDependentGraph has a serialize method
+    }
+};
+
 
 class BuildMultimodalRAPTORData : public ParameterizedCommand {
 

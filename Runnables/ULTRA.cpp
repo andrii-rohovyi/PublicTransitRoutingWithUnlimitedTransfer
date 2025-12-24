@@ -4,6 +4,7 @@
 #include "Commands/BenchmarkULTRA.h"
 #include "Commands/BenchmarkMcULTRA.h"
 #include "Commands/BenchmarkMultimodal.h"
+#include "Commands/DebugQuery.h"
 
 #include "../Helpers/Console/CommandLineParser.h"
 #include "../Helpers/MultiThreading.h"
@@ -20,6 +21,8 @@ int main(int argc, char** argv) {
     new BuildCoreCH(shell);
 
     //Preprocessing
+    new BuildTDGraph(shell);
+    new TestTDGraphLoad(shell);
     new BuildFreeTransferGraph(shell);
     new ComputeStopToStopShortcuts(shell);
     new ComputeMcStopToStopShortcuts(shell);
@@ -40,8 +43,19 @@ int main(int argc, char** argv) {
     new RunULTRACSAQueries(shell);
     new RunTransitiveRAPTORQueries(shell);
     new RunDijkstraRAPTORQueries(shell);
+    new RunDijkstraRAPTORQueriesNoCH(shell);
+    new RunTDDijkstraQueries(shell);
+    new RunTDDijkstraFullQueries(shell);
+    new RunTDDijkstraQueriesFromBinary(shell);
     new RunHLRAPTORQueries(shell);
     new RunULTRARAPTORQueries(shell);
+    new CheckULTRARAPTORPruning(shell);
+    new CheckULTRACSAPruning(shell);
+    new CheckRAPTORPruning(shell);
+    new TestTransitiveRAPTORQueries(shell);
+    new CompareCSAandRAPTOR(shell);
+    new TestTransitiveCSAQueries(shell);
+    new CheckCSAPruning(shell);
     new RunTransitiveTBQueries(shell);
     new RunULTRATBQueries(shell);
 
@@ -55,6 +69,19 @@ int main(int argc, char** argv) {
     new RunUBMTBQueries(shell);
     new RunUBMHydRAQueries(shell);
     new ComputeTransferTimeSavings(shell);
+    new CheckMcRAPTORPruning(shell);
+    new CheckULTRAMcRAPTORPruning(shell);
+    new CheckBMcRAPTORPruning(shell);
+    new CheckUBMRAPTORPruning(shell);
+    new CheckDijkstraRAPTORPruning(shell);
+    new CheckTDDijkstraPruning(shell);
+    new CheckMCRPruning(shell);
+    new CompareMRwithTDDijkstra(shell);
+    new CompareMRwithTDStatefulNoCH(shell);
+    new CompareMRwithTDStatefulCoreCH(shell);
+    new CheckTDDijkstraPruning(shell);
+    new DebugSingleQuery(shell);
+    new DebugExplicitQuery(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);

@@ -16,6 +16,7 @@ int main(int argc, char** argv) {
     new GTFSToIntermediate(shell);
     new IntermediateToCSA(shell);
     new IntermediateToRAPTOR(shell);
+    new IntermediateToTDGraph(shell);
     new BuildMultimodalRAPTORData(shell);
     new AddModeToMultimodalRAPTORData(shell);
     new BuildMultimodalTripBasedData(shell);

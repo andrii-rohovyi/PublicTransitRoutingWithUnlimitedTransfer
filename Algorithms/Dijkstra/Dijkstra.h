@@ -1,10 +1,13 @@
+// Prevent multiple inclusions of the same header file
 #pragma once
 
+// --- STANDARD INCLUDES ---
 #include <iostream>
 #include <vector>
 #include <string>
 #include <set>
 
+// --- PROJECT INCLUDES ---
 #include "../../Helpers/Types.h"
 #include "../../Helpers/Timer.h"
 #include "../../Helpers/String/String.h"
@@ -14,16 +17,45 @@
 #include "../../DataStructures/Container/IndexedSet.h"
 #include "../../DataStructures/Attributes/AttributeNames.h"
 
+
+/**
+ * @brief A highly generic and efficient implementation of Dijkstra's algorithm.
+ * 
+ * @details This class implements Dijkstra's algorithm for finding the shortest paths
+ * from a source vertex to all other vertices in a weighted graph with non-negative 
+ * edge weights. It works with any graph type with a basic interface. This 
+ * implementation uses a timestamp mechanism for lazy initialization, avoiding the need
+ * to reset all vertex labels between runs. 
+ * 
+ * The algorithm's behavior can be customized by providing callback functions (functors)
+ * for settling vertices, pruning edges, or stopping the search early.
+ * 
+ * @tparam GRAPH The type of the graph data structure. Must provide methods like
+ * `numVertices()`, `edgesFrom(Vertex)`, and `get(ToVertex, Edge)`.
+ * @tparam DEBUG A compile-time boolean flag. If true, the class will collect and print
+ * performance metrics like execution time and the number of settled vertices. Defaults
+ * to false.
+*/
 template<typename GRAPH, bool DEBUG = false>
 class Dijkstra {
 
 public:
     using Graph = GRAPH;
+
+    // Create a class member variable to hold the debug flag
     static constexpr bool Debug = DEBUG;
     using Type = Dijkstra<Graph, Debug>;
 
+/** 
+ * @brief A label for each vertex in the graph, used in the priority queue.
+ * @details This struct extends the ExternalKHeapElement so that it can be stored
+ * in the ExternalKHeap priority queue. It contains the current shortest distance
+ * from the source vertex, the parent vertex in the shortest path tree, and a
+ * timestamp for lazy clearing.
+ */
 public:
     struct VertexLabel : public ExternalKHeapElement {
+        // 
         VertexLabel() : ExternalKHeapElement(), distance(intMax), parent(noVertex), timeStamp(-1) {}
         inline void reset(int time) {
             distance = intMax;
@@ -39,29 +71,56 @@ public:
         int timeStamp;
     };
 
+/**
+ * @brief Primary constructor for the Dijkstra algorithm class.
+ * @details This constructor initializes all necessary data structures for the algorithm.
+ * It stores references to the graph and its weights and pre-allocates
+ * memory for the priority queue and vertex labels for efficiency.
+ * * @param graph A constant reference to the graph object. The algorithm will run on this graph.
+ * It's a reference to avoid making an expensive copy.
+ * @param weight A constant reference to a vector of edge weights. It's assumed that the
+ * weight for the edge with ID 'i' is located at weight[i].
+ */
 public:
     Dijkstra(const GRAPH& graph, const std::vector<int>& weight) :
+        // Store references to the user-provided graph and weight data
         graph(graph),
         weight(weight),
+        
+        // Pre-allocate memory for the priority queue to hold all vertices
         Q(graph.numVertices()),
+        
+        // Pre-allocate memory for the label of each vertex
         label(graph.numVertices()),
+        
+        // Initialize the timestamp for the lazy-clearing mechanism
         timeStamp(0),
+        
+        // Initialize the debug counter for settled vertices
         settleCount(0) {
+        // The constructor body is empty because all initialization is done
+        // in the member initializer list above, which is more efficient.
     }
 
+    // A convenience constructor for when the weight type is not explicitly provided.
+    // It defaults to using the 'TravelTime' attribute from the graph.
     Dijkstra(const GRAPH& graph) :
         Dijkstra(graph, graph[TravelTime]){
     }
 
+    // A shortcut constructor for when the user *does* provide attribute name 
+    // for the weights. Takes a name wrapper as the second argument.  
     template<AttributeNameType ATTRIBUTE_NAME>
     Dijkstra(const GRAPH& graph, const AttributeNameWrapper<ATTRIBUTE_NAME> weight) :
         Dijkstra(graph, graph[weight]){
     }
 
+    // Deleted constructors for when r-value references are passed in
     Dijkstra(const GRAPH&&, const std::vector<int>&) = delete;
     Dijkstra(const GRAPH&, const std::vector<int>&&) = delete;
     Dijkstra(const GRAPH&&) = delete;
 
+    // Same as above but for the attribute name wrapper version
     template<AttributeNameType ATTRIBUTE_NAME>
     Dijkstra(const GRAPH&&, const AttributeNameWrapper<ATTRIBUTE_NAME>) = delete;
 
