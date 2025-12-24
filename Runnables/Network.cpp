@@ -22,6 +22,7 @@ int main(int argc, char** argv) {
     new BuildMultimodalTripBasedData(shell);
     new AddModeToMultimodalTripBasedData(shell);
     new LoadDimacsGraph(shell);
+    new GeoJSONToDimacs(shell);
     new DuplicateTrips(shell);
     new AddGraph(shell);
     new ReplaceGraph(shell);

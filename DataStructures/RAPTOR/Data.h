@@ -743,6 +743,7 @@ public:
         writeLineCSV(fileBaseName + "lines.csv");
         writeTripCSV(fileBaseName + "trips.csv");
         writeFootpathCSV(fileBaseName + "footpaths.csv");
+        writeStopIDCSV(fileBaseName + "stopids.csv");
     }
 
     inline void writeStopCSV(const std::string& fileName) const noexcept {
@@ -805,6 +806,26 @@ public:
         for (const StopId from : stops()) {
             for (const Edge edge : transferGraph.edgesFrom(from)) {
                 file << from.value() << "," << transferGraph.get(ToVertex, edge).value() << "," << transferGraph.get(TravelTime, edge) << "\n";
+            }
+        }
+        file.close();
+    }
+
+    inline void writeStopIDCSV(const std::string& fileName) const noexcept {
+        std::ofstream file(fileName);
+        Assert(file, "cannot open file: " << fileName);
+        Assert(file.is_open(), "cannot open file: " << fileName);
+        file << "LineId,TripId,StopIndex,StopId,ArrivalTime,DepartureTime\n";
+        for (const RouteId route : routes()) {
+            const StopId* stops = stopArrayOfRoute(route); 
+            const StopEvent* stopEvents = firstTripOfRoute(route);
+            const size_t tripLength = numberOfStopsInRoute(route);
+            for (size_t i = 0; i < numberOfTripsInRoute(route); i++) {
+                for (size_t j = 0; j < tripLength; j++) {
+                    const StopEvent& stopEvent = stopEvents[(i * tripLength) + j];
+                    const StopId stopId = stops[j];
+                    file << route.value() << "," << i << "," << j << "," << stopId.value() << "," << stopEvent.arrivalTime << "," << stopEvent.departureTime << "\n";
+                }
             }
         }
         file.close();

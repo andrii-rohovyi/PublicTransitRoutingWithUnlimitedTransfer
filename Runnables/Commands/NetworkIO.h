@@ -268,3 +268,167 @@ private:
         graph.writeBinary(getParameter("Output file"));
     }
 };
+
+class GeoJSONToDimacs : public ParameterizedCommand {
+public:
+    GeoJSONToDimacs(BasicShell& shell) :
+        ParameterizedCommand(shell, "geoJsonToDimacs", "Converts GeoJSON to DIMACS format.") {
+        addParameter("Input file");
+        addParameter("Output file base name");
+        addParameter("Default speed (km/h)", "5.0");
+    }
+
+    virtual void execute() noexcept {
+        const std::string inputFile = getParameter("Input file");
+        const std::string outputFileBase = getParameter("Output file base name");
+        const double defaultSpeed = getParameter<double>("Default speed (km/h)");
+        
+        auto start = std::chrono::high_resolution_clock::now();
+        std::cout << "Starting GeoJSON to DIMACS conversion..." << std::endl;
+        
+        // Use EdgeListImplementation directly with correct template parameters
+        DimacsGraphWithCoordinates graph;
+        
+        // Parse GeoJSON and populate graph
+        parseGeoJSON(inputFile, graph);
+        
+        auto parseEnd = std::chrono::high_resolution_clock::now();
+        auto parseDuration = std::chrono::duration_cast<std::chrono::seconds>(parseEnd - start).count();
+        std::cout << "Parsing completed in " << parseDuration << " seconds." << std::endl;
+        
+        // Compute travel times based on coordinates
+        std::cout << "Computing travel times..." << std::endl;
+        Graph::computeTravelTimes(graph, defaultSpeed);
+        
+        // Output to DIMACS format
+        std::cout << "Writing DIMACS files..." << std::endl;
+        Graph::toDimacs(outputFileBase, graph, graph[TravelTime]);
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto totalDuration = std::chrono::duration_cast<std::chrono::seconds>(end - start).count();
+        std::cout << "Conversion completed in " << totalDuration << " seconds." << std::endl;
+        std::cout << "Files written: " << outputFileBase << ".gr and " 
+                  << outputFileBase << ".co" << std::endl;
+    }
+    
+private:
+    void parseGeoJSON(const std::string& filename, DimacsGraphWithCoordinates& graph) {
+        auto start = std::chrono::high_resolution_clock::now();
+        
+        FILE* fp = fopen(filename.c_str(), "r");
+        if (!fp) {
+            std::cerr << "Cannot open GeoJSON file: " << filename << std::endl;
+            return;
+        }
+
+        std::unordered_map<std::pair<int64_t, int64_t>, Vertex, PairHash> pointToVertex;
+        
+        size_t featuresProcessed = 0;
+        size_t lineStringsProcessed = 0;
+        size_t pointsProcessed = 0;
+        size_t edgesCreated = 0;
+        size_t lastReportTime = 0;
+
+        char readBuffer[65536];
+        rapidjson::FileReadStream is(fp, readBuffer, sizeof(readBuffer));
+        rapidjson::Document document;
+        document.ParseStream(is);
+        fclose(fp);
+
+        auto parseEnd = std::chrono::high_resolution_clock::now();
+        auto parseTime = std::chrono::duration_cast<std::chrono::seconds>(parseEnd - start).count();
+        std::cout << "JSON parsing completed in " << parseTime << " seconds." << std::endl;
+        
+        if (document.HasParseError()) {
+            std::cerr << "JSON parse error: " << document.GetParseError() << std::endl;
+            return;
+        }
+        
+        if (!document.HasMember("features") || !document["features"].IsArray()) {
+            std::cerr << "No features array found in GeoJSON" << std::endl;
+            return;
+        }
+        
+        const auto& features = document["features"];
+        const size_t featureCount = features.Size();
+        std::cout << "Processing " << featureCount << " features..." << std::endl;
+        
+        for (rapidjson::SizeType i = 0; i < featureCount; i++) {
+            featuresProcessed++;
+            
+            auto now = std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::high_resolution_clock::now() - start).count();
+            if (featuresProcessed % 1000 == 0 || now - lastReportTime >= 5) {
+                std::cout << "Processed " << featuresProcessed << " of " << featureCount 
+                          << " features (" << (featuresProcessed * 100 / featureCount) << "%)" << std::endl;
+                lastReportTime = now;
+            }
+
+            const auto& feature = features[i];
+            if (!feature.HasMember("geometry") || !feature["geometry"].IsObject()) continue;
+            
+            const auto& geometry = feature["geometry"];
+            if (!geometry.HasMember("type") || !geometry["type"].IsString()) continue;
+            
+            const char* geoType = geometry["type"].GetString();
+            if (strcmp(geoType, "LineString") != 0) continue;
+            
+            lineStringsProcessed++;
+            
+            if (!geometry.HasMember("coordinates") || !geometry["coordinates"].IsArray()) continue;
+            
+            const auto& coordinates = geometry["coordinates"];
+            const size_t coordCount = coordinates.Size();
+            
+            std::vector<Vertex> pathVertices;
+            pathVertices.reserve(coordCount);
+            
+            for (rapidjson::SizeType j = 0; j < coordCount; j++) {
+                if (!coordinates[j].IsArray() || coordinates[j].Size() < 2) continue;
+                
+                pointsProcessed++;
+                
+                const int64_t lon = static_cast<int64_t>(coordinates[j][0].GetDouble() * 1000000);
+                const int64_t lat = static_cast<int64_t>(coordinates[j][1].GetDouble() * 1000000);
+                
+                auto key = std::make_pair(lon, lat);
+                auto it = pointToVertex.find(key);
+                Vertex v;
+                
+                if (it == pointToVertex.end()) {
+                    v = graph.addVertex();
+                    graph.set(Coordinates, v, Geometry::Point(Construct::LatLong, 
+                              lat / 1000000.0, lon / 1000000.0));
+                    pointToVertex[key] = v;
+                } else {
+                    v = it->second;
+                }
+                
+                pathVertices.push_back(v);
+            }
+            
+            for (size_t k = 1; k < pathVertices.size(); k++) {
+                graph.addEdge(pathVertices[k-1], pathVertices[k]);
+                graph.addEdge(pathVertices[k], pathVertices[k-1]);
+                edgesCreated += 2;
+            }
+        }
+        
+        auto end = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::seconds>(end - start).count();
+        
+        std::cout << "GeoJSON parsing stats:" << std::endl
+                  << "  Features processed: " << featuresProcessed << std::endl
+                  << "  LineStrings found: " << lineStringsProcessed << std::endl
+                  << "  Points processed: " << pointsProcessed << std::endl
+                  << "  Vertices created: " << graph.numVertices() << std::endl
+                  << "  Edges created: " << graph.numEdges() << std::endl
+                  << "  Time taken: " << duration << " seconds" << std::endl;
+    }
+    
+    struct PairHash {
+        size_t operator()(const std::pair<int64_t, int64_t>& p) const {
+            return std::hash<int64_t>()(p.first) ^ std::hash<int64_t>()(p.second);
+        }
+    };
+};

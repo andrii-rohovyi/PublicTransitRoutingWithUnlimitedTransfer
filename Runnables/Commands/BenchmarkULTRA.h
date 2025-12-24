@@ -329,6 +329,8 @@ public:
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.writeCSV("");
         raptorData.printInfo();
+        raptorData.writeCSV("customnetwork");
+        RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, true, false> algorithm(raptorData);
 
         const size_t n = getParameter<size_t>("Number of queries");
         const std::vector<StopQuery> queries = generateRandomStopQueries(raptorData.numberOfStops(), n);
