@@ -1,5 +1,13 @@
 #pragma once
 
+// ============================================================================
+// IMPORTANT: Compatibility with TimeDependentGraph.h
+//
+// If TimeDependentGraph.h has already been included, we don't redefine the
+// structs. Both graph classes use the same struct definitions and are
+// compatible with TimeDependentDijkstraStateful.
+// ============================================================================
+
 #include <vector>
 #include <algorithm>
 #include <stdexcept>
@@ -20,86 +28,33 @@
 
 using TransferGraph = ::TransferGraph;
 
+// =========================================================================
+// IMPORTANT: DiscreteTrip and EdgeTripsHandle structs
+// =========================================================================
+// These structs are defined in TimeDependentGraph.h and are identical for both
+// TimeDependentGraph and TimeDependentGraphClassic. We do NOT redefine them here.
+// VertexPairHash is also defined there and reused here.
+// Make sure TimeDependentGraph.h is included before this header.
+// =========================================================================
 
 // =========================================================================
-// 1. Core Time-Dependent Data Structure
-// =========================================================================
-
-/*
-[CORE LOGIC] A single departure on a specific route.
-
-[USAGE] Stored in the  global 'allDiscreteTrips' vector in TimeDependentGraph.
-Accessed via binary search inside 'getArrivalTime' during edge relaxation.
-*/
-struct DiscreteTrip {
-    int departureTime;
-    int arrivalTime;
-    int tripId = -1;
-    uint16_t departureStopIndex = 0;
-
-    // [CORE LOGIC] One trip is less than another if it departs earlier
-    // [OPTIMIZATION] Inline operator: hints compiler to embed logic directly at call site
-    // to avoid function call overhead in hot loops (std::sort, std::lower_bound).
-    inline bool operator<(const DiscreteTrip& other) const noexcept {
-        return departureTime < other.departureTime;
-    }
-    // [CORE LOGIC] Heterogeneous comparison to int timestamps for lower_bound searches
-    inline bool operator<(const int time) const noexcept {
-        return departureTime < time;
-    }
-};
-
-/*
-[CORE LOGIC] Handle stored on the graph edge to reference the flattened trip data
-This is used to map the logical edge to a specific slice of the global 'allDiscreteTrips' vector.
-This way, we avoid storing large function objects on each edge, saving memory
-and improving cache locality.
-
-[USAGE] Stored as the 'Function' attribute on every Edge in the underlying DynamicGraph.
-Retrieved by Dijkstra via 'graph.get(Function, edge)' during relaxation.
-*/
-struct EdgeTripsHandle {
-    uint32_t firstTripIndex;    // Index into allDiscreteTrips
-    uint32_t tripCount;         // Number of trips for this edge
-    int walkTime = never;       // Walking time if applicable - merges Walking/Transit edges
-    uint32_t firstSuffixIndex;  // [OPTIMIZATION] Index into allSuffixMinArrivals for O(1) lookups
-};
-
-// =========================================================================
-// 2. TimeDependentGraph Wrapper Class
+// TimeDependentGraphClassic Class
 // =========================================================================
 
 /*
-[FACTORY UTILITY] Custom hash functor for std::pair.
-The C++ Standard Library does not provide a default hash for std::pair.
-
-[USAGE] Used as a key hasher in std::unordered_map during the 'FromIntermediate'
-graph construction phase to group raw stops into edges.
-*/
-struct VertexPairHash {
-    std::size_t operator()(const std::pair<Vertex, Vertex>& p) const {
-        /*
-        Hash combination logic:
-        1. Hash the source vertex (p.first)
-        2. Hash the target vertex (p.second)
-        3. Bit-shift the second hash (<< 1) to make the order sensitive (A->B != B->A)
-        4. XOR (^) the two hashes to combine them into a single size_t value
-        */
-        return std::hash<size_t>()(size_t(p.first)) ^ (std::hash<size_t>()(size_t(p.second)) << 1);
-    }
-};
-
-
-/*
-[CORE LOGIC] Represents the graph data structure for time-dependent queries:
+[CORE LOGIC] Represents the graph data structure for time-dependent queries with dominated edge filtering:
 1. Vertices/Edges use a standard adjacency list (DynamicGraph) for topology.
 2. Timetable data is stored in separate, flattened vectors for cache locality.
 3. Edges store 'EdgeTripsHandle' indices into these flattened vectors.
+4. ENHANCEMENT: Implements dominated connection filtering (cut operation) to reduce graph size.
 
 [USAGE] The main data structure instantiated by the routing engine
-(TimeDependentDijkstraStateful) to answer queries.
+(TimeDependentDijkstraStateful) to answer queries with optimized edge sets.
 */
-class TimeDependentGraph {
+class TimeDependentGraphClassic {
+public:
+    using EdgeTripsHandle = ::EdgeTripsHandle;  // Export handle type for generic algorithms
+
 private:
     using TDEdgeAttributes = Meta::List<            // The schema for edges
         ::Attribute<FromVertex, Vertex>,            // The ID of the source vertex (u)
@@ -107,7 +62,7 @@ private:
         ::Attribute<Valid, bool>,                   // Whether an edge is deleted/disabled
         ::Attribute<IncomingEdgePointer, size_t>,   // Links an edge to the target node's list of incoming edges
         ::Attribute<ReverseEdge, Edge>,             // The ID edge of the reverse edge (v -> u)
-        ::Attribute<Function, EdgeTripsHandle>      // Handle to the trip data
+        ::Attribute<Function, EdgeTripsHandle>  // Handle to the trip data
     >;
 
     using TDVertexAttributes = Meta::List<              // The schema for vertices
@@ -124,7 +79,7 @@ private:
 
 public:
     /*
-    [CORE LOGIC] Represents a single stop within a full vehicle journey. 
+    [CORE LOGIC] Represents a single stop within a full vehicle journey.
 
     [USAGE] Stored in the flattened 'allTripLegs' vector. Accessed via linear scan
     inside 'scanTrip' (Dijkstra) to traverse the route after boarding.
@@ -140,14 +95,14 @@ public:
     //
     // [USAGE] The primary storage for all schedule events.
     std::vector<DiscreteTrip> allDiscreteTrips;
-    
+
     // [OPTIMIZATION] Suffix minima (range minimum queries) for trip arrival times.
     // For every trip list, we pre-calculate the minimum arrival time of all subsequent trips.
     // allSuffixMinArrivals[i] = min(trips[i].arr, trips[i+1].arr, ...)
     //
     // [USAGE] Accessed during query relaxation inside 'getArrivalTime' to skip linear scans.
     std::vector<int> allSuffixMinArrivals;
-    
+
 private:
     // [OPTIMIZATION] Flattened trip data storage (Compressed Sparse Row style).
     // tripOffsets[tripId] gives the starting index in allTripLegs for that trip.
@@ -157,14 +112,18 @@ private:
     // Important for cache locality during trip scans.
     std::vector<TripLeg> allTripLegs;
 
+    // [STATISTICS] Track filtering effectiveness
+    size_t totalTripsBeforeFilter = 0;
+    size_t totalTripsAfterFilter = 0;
+
 public:
     // Create an empty constructor now, fill via FromIntermediate or FromBinary later
-    TimeDependentGraph() = default;
+    TimeDependentGraphClassic() = default;
 
     // [CORE LOGIC] Trip traversal: given a tripId and current stop index,
     // retrieve the next stop and its arrival time. This function answers the question:
     // "If I'm on trip X at stop index Y, where do I go next and when do I get there?"
-    // 
+    //
     // [USAGE] Used by Dijkstra's 'scanTrip' function to traverse a specific vehicle's route.
     inline bool getNextStop(const int tripId, const uint16_t currentStopIndex, Vertex& outStop, int& outArrival) const noexcept {
         // Verify tripId validity
@@ -192,7 +151,7 @@ public:
     inline const TripLeg& getTripLeg(const size_t index) const noexcept {
         return allTripLegs[index];
     }
-    
+
     // [USAGE] Returns total number of stop events (size of flattened schedule).
     // Essential for sizing the 'globalVehicleLabels' vector in the Dijkstra algorithm to match the graph size.
     inline size_t getNumStopEvents() const noexcept {
@@ -209,7 +168,7 @@ public:
     inline const DiscreteTrip* getTripsBegin(const EdgeTripsHandle& h) const noexcept {
         return &allDiscreteTrips[h.firstTripIndex];
     }
-    
+
     // [USAGE] Returns iterator to the end of an edge's trip list.
     inline const DiscreteTrip* getTripsEnd(const EdgeTripsHandle& h) const noexcept {
         return &allDiscreteTrips[h.firstTripIndex + h.tripCount];
@@ -220,19 +179,18 @@ public:
         return &allSuffixMinArrivals[h.firstSuffixIndex];
     }
 
-    // [USAGE] Return type for 'findMatchingTrip'. 
+    // [USAGE] Return type for 'findMatchingTrip'.
     // Wraps the result of the backward search used during path reconstruction.
     // If no trip matches the specific (u, v, dep, arr) tuple, tripId remains -1.
     struct FoundTrip {
         int tripId = -1;
     };
 
-
     // [CORE LOGIC] Helper for path reconstruction.
     // Finds a tripId that goes from u -> v, departing >= minDepTime and arriving == atArrTime.
     //
     // [USAGE] Called by TimeDependentDijkstraStateful::getPath() during the backward pass
-    // to recover the tripId since we don't store it during the hot forward scan.    
+    // to recover the tripId since we don't store it during the hot forward scan.
     inline FoundTrip findMatchingTrip(Vertex u, Vertex v, int minDepTime, int atArrTime) const noexcept {
         // Iterate edges from u to find connection to v
         for (const Edge e : graph.edgesFrom(u)) {
@@ -256,12 +214,78 @@ public:
         return {-1};
     }
 
-    // [FACTORY] Builds a TimeDependentGraph from an Intermediate::Data representation.
-    // Converts an "Intermediate" (RAPTOR-style) representation into this graph format.
+    // [NEW FEATURE] Dominated connection filtering (ATF cut operation)
+    // Removes connections that are strictly dominated by other connections.
+    // A connection (d1, a1) dominates (d2, a2) if d1 <= d2 and a1 < a2
     //
-    // [USAGE] Called during the preprocessing phase to build the graph structure.
-    inline static TimeDependentGraph FromIntermediate(const Intermediate::Data& inter) noexcept {
-        TimeDependentGraph tdGraph;
+    // [USAGE] Called during graph construction to reduce the number of connections
+    // that need to be stored and evaluated during queries.
+    //
+    // Algorithm (based on Python ATF.cut()):
+    // - Iterate through sorted connections (by departure time)
+    // - Keep a result list of non-dominated connections
+    // - For each connection, check if it's dominated by the last kept connection
+    // - Also filter out connections slower than walking (if walk exists)
+    inline static std::vector<DiscreteTrip> filterDominatedConnections(
+        std::vector<DiscreteTrip>& trips,
+        int walkTime) noexcept {
+
+        if (trips.empty()) return trips;
+
+        std::vector<DiscreteTrip> result;
+        result.reserve(trips.size());
+
+        for (size_t i = 0; i < trips.size(); ++i) {
+            const auto& currentTrip = trips[i];
+
+            // Check if this trip is slower than walking
+            if (walkTime != never) {
+                int transitTime = currentTrip.arrivalTime - currentTrip.departureTime;
+                if (transitTime > walkTime) {
+                    // This connection is slower than walking, skip it
+                    continue;
+                }
+            }
+
+            // Check domination against the last kept connection
+            // Python logic: if result is not empty and currentTrip.arrival > lastTrip.arrival, check departure
+            // If departure is later, add current. Otherwise (same or earlier departure but worse arrival), pop last or skip
+            while (!result.empty()) {
+                const auto& lastTrip = result.back();
+
+                // If current arrives STRICTLY earlier, it dominates last (same or later departure, earlier arrival)
+                if (currentTrip.arrivalTime < lastTrip.arrivalTime) {
+                    // Current dominates last - remove last
+                    result.pop_back();
+                } else {
+                    // Current arrives later or same as last
+                    // Only keep current if it departs strictly later
+                    if (lastTrip.departureTime < currentTrip.departureTime) {
+                        // Different departure times, both should be kept
+                        break;
+                    } else {
+                        // Same departure time (or current is earlier?) but worse/same arrival - skip current
+                        goto skip_current;
+                    }
+                }
+            }
+
+            // Add this trip if it survived domination check
+            result.push_back(currentTrip);
+
+            skip_current:;
+        }
+
+        return result;
+    }
+
+    // [FACTORY] Builds a TimeDependentGraphClassic from an Intermediate::Data representation.
+    // Converts an "Intermediate" (RAPTOR-style) representation into this graph format.
+    // ENHANCEMENT: Applies dominated connection filtering during construction.
+    //
+    // [USAGE] Called during the preprocessing phase to build the optimized graph structure.
+    inline static TimeDependentGraphClassic FromIntermediate(const Intermediate::Data& inter) noexcept {
+        TimeDependentGraphClassic tdGraph;
         const size_t numStops = inter.numberOfStops();
         const size_t numVertices = inter.transferGraph.numVertices();
 
@@ -270,7 +294,7 @@ public:
         for (size_t i = 0; i < numVertices; ++i) {
             tdGraph.graph.addVertex();
         }
-        
+
         // Initialize stop-specific transfer buffers
         tdGraph.minTransferTimeByVertex.assign(numVertices, 0);
         for (size_t s = 0; s < std::min(numStops, numVertices); ++s) {
@@ -286,21 +310,21 @@ public:
         std::cout << "Building trip segments..." << std::flush;
         for (size_t tripId = 0; tripId < inter.trips.size(); ++tripId) {
             const Intermediate::Trip& trip = inter.trips[tripId];
-            
+
             // Iterate through every stop in the trip to create edges (segments).
-            // A trip with stops A->B->C creates segments A->B and B->C.            
+            // A trip with stops A->B->C creates segments A->B and B->C.
             for (size_t i = 0; i + 1 < trip.stopEvents.size(); ++i) {
                 const Intermediate::StopEvent& stopEventU = trip.stopEvents[i];
                 const Intermediate::StopEvent& stopEventV = trip.stopEvents[i + 1];
                 const Vertex u = Vertex(stopEventU.stopId);
                 const Vertex v = Vertex(stopEventV.stopId);
-                
-                // To support transfer times we normally check: 
+
+                // To support transfer times we normally check:
                 // ArrivalTime + TransferTime <= DepartureTime.
                 //
                 // [OPTIMIZATION] We pre-subtract the transfer time from the departure time here.
                 // New Check: ArrivalTime <= (DepartureTime - TransferTime).
-                // This saves an addition operation during the hot query loop.                
+                // This saves an addition operation during the hot query loop.
                 const int buffer = (u < inter.stops.size()) ? inter.stops[u].minTransferTime : 0;
 
                 tripSegments[{u, v}].emplace_back(DiscreteTrip{
@@ -309,58 +333,48 @@ public:
                     .tripId = (int)tripId,
                     .departureStopIndex = (uint16_t)i
                 });
+
+                tdGraph.totalTripsBeforeFilter++;
             }
         }
         std::cout << " done." << std::endl;
 
         // 3. FLATTEN TRIP LEGS (CSR CONSTRUCTION)
         // Build the 'tripOffsets' and 'allTripLegs' vectors for the "On-Vehicle" phase.
-        
+
         // Memory allocation
         tdGraph.tripOffsets.reserve(inter.trips.size() + 1);
-        
+
         // Track the cumulative count of stops seen so far
         size_t totalStops = 0;
         for (const auto& trip : inter.trips) {
             tdGraph.tripOffsets.push_back(totalStops);
             totalStops += trip.stopEvents.size();
         }
-        
+
         // Now that we know how many stops there are, allocate the allTripLegs vector
         // This way, we guarantee that all stop events are laid out sequentially in physical memory.
         tdGraph.tripOffsets.push_back(totalStops);
         tdGraph.allTripLegs.resize(totalStops);
-        
+
         // Outer loop: retrieve baseOffset for each trip,
         // which tells us where to write each specific trip's stop events in allTripLegs.
         for (size_t tripId = 0; tripId < inter.trips.size(); ++tripId) {
             const Intermediate::Trip& trip = inter.trips[tripId];
             const size_t baseOffset = tdGraph.tripOffsets[tripId];
-            
+
             // Inner loop: linear fill of allTripLegs for this trip
             for (size_t i = 0; i < trip.stopEvents.size(); ++i) {
-                tdGraph.allTripLegs[baseOffset + i] = { 
-                    trip.stopEvents[i].arrivalTime, 
-                    Vertex(trip.stopEvents[i].stopId) 
+                tdGraph.allTripLegs[baseOffset + i] = {
+                    trip.stopEvents[i].arrivalTime,
+                    Vertex(trip.stopEvents[i].stopId)
                 };
             }
         }
-        // As a result of the above, Dijkstra can now traverse this "tape" containing
-        // all stop events for all trips by simply incrementing a pointer/index.
-        // This is handled by the CPU prefetcher very efficiently.
 
-        // 4. TRANSFER GRAPH PROCESSING       
+        // 4. TRANSFER GRAPH PROCESSING
         // Load static walking edges (transfers) into a map for easy merging.
-        // We extract edges from the static transferGraph and deduplicate them
-        // into a hash map (minTransferTimes), which is later used to merge walking options
-        // into transit edges, creating hybrid edges where possible. 
-        
-        // Declare a temporary hash map containing directed connections from source to target
-        // and the walking time in seconds (int). 
         std::unordered_map<std::pair<Vertex, Vertex>, int, VertexPairHash> minTransferTimes;
-        
-        // Pre-allocate enough buckets to store every edge  from the input graph
-        // to prevent expensive rehashing during insertion.
         minTransferTimes.reserve(inter.transferGraph.numEdges());
 
         const Intermediate::TransferGraph& interTransferGraph = inter.transferGraph;
@@ -369,12 +383,9 @@ public:
         for (const Vertex u : interTransferGraph.vertices()) {
             // Inner loop: iterate every outgoing edge from u
             for (const Edge edge : interTransferGraph.edgesFrom(u)) {
-                // Extract the destination node v and travel time
                 const Vertex v = interTransferGraph.get(ToVertex, edge);
                 const int travelTime = interTransferGraph.get(TravelTime, edge);
-                // Construct the lookup key for the (u, v) pair
                 auto key = std::make_pair(u, v);
-                // Deduplication check: if the edge already exists, keep the minimum travel time
                 auto it = minTransferTimes.find(key);
                 if (it == minTransferTimes.end()) {
                     minTransferTimes[key] = travelTime;
@@ -384,12 +395,11 @@ public:
             }
         }
 
-        // 5. GRAPH COMPILATION
-        // Iterate over the bucketed edges, sort them, optimize them, and store them.
-        std::cout << "Creating time-dependent edges (flattened)..." << std::flush;
+        // 5. GRAPH COMPILATION WITH DOMINATED CONNECTION FILTERING
+        std::cout << "Creating time-dependent edges with domination filtering..." << std::flush;
         size_t edgeCount = 0;
-        
-        tdGraph.allDiscreteTrips.reserve(tripSegments.size() * 5); 
+
+        tdGraph.allDiscreteTrips.reserve(tripSegments.size() * 5);
         tdGraph.allSuffixMinArrivals.reserve(tripSegments.size() * 5);
 
         for (auto& pair : tripSegments) {
@@ -398,54 +408,57 @@ public:
             std::vector<DiscreteTrip>& trips = pair.second;
 
             // Check if there is also a walking option for this edge
-            // Result: walkTime holds the walking duration (e.g., 120 seconds) 
-            // or never (infinity) if no walk is possible.
             auto transferIt = minTransferTimes.find({u, v});
             int walkTime = (transferIt != minTransferTimes.end()) ? transferIt->second : never;
             if (transferIt != minTransferTimes.end()) {
                 minTransferTimes.erase(transferIt);     // Erase to avoid double-adding later
             }
-            
-            // A. Sorting - REQUIRED for binary search (std::lower_bound)
+
+            // A. Sorting - REQUIRED for both binary search and domination filtering
             std::sort(trips.begin(), trips.end());
 
-            // B. Flattening into global arrays
-            // Record the starting indices before insertion
+            // B. NEW: Apply dominated connection filtering (ATF cut)
+            // This reduces the number of connections by removing dominated ones
+            std::vector<DiscreteTrip> filteredTrips = filterDominatedConnections(trips, walkTime);
+
+            tdGraph.totalTripsAfterFilter += filteredTrips.size();
+
+            if (filteredTrips.empty() && walkTime == never) {
+                // No connections on this edge at all - skip it
+                continue;
+            }
+
+            // C. Flattening into global arrays
             uint32_t firstTripIdx = tdGraph.allDiscreteTrips.size();
             uint32_t firstSuffixIdx = tdGraph.allSuffixMinArrivals.size();
-            
-            tdGraph.allDiscreteTrips.insert(tdGraph.allDiscreteTrips.end(), trips.begin(), trips.end());
-            
-            // C. Suffix minima (REQUIRED for O(1) arrival query)
-            // Iterate backwards to calculate the best possible arrival time from this point onwards.
-            // This allows O(1) pruning during queries.            
+
+            tdGraph.allDiscreteTrips.insert(tdGraph.allDiscreteTrips.end(),
+                                           filteredTrips.begin(), filteredTrips.end());
+
+            // D. Suffix minima (REQUIRED for O(1) arrival query)
             size_t startSize = tdGraph.allSuffixMinArrivals.size();
-            tdGraph.allSuffixMinArrivals.resize(startSize + trips.size());
-            if (!trips.empty()) {
-                tdGraph.allSuffixMinArrivals.back() = trips.back().arrivalTime;
-                for (int i = int(trips.size()) - 2; i >= 0; --i) {
-                    tdGraph.allSuffixMinArrivals[startSize + i] = std::min(trips[i].arrivalTime, tdGraph.allSuffixMinArrivals[startSize + i + 1]);
+            tdGraph.allSuffixMinArrivals.resize(startSize + filteredTrips.size());
+            if (!filteredTrips.empty()) {
+                tdGraph.allSuffixMinArrivals.back() = filteredTrips.back().arrivalTime;
+                for (int i = int(filteredTrips.size()) - 2; i >= 0; --i) {
+                    tdGraph.allSuffixMinArrivals[startSize + i] =
+                        std::min(filteredTrips[i].arrivalTime,
+                                tdGraph.allSuffixMinArrivals[startSize + i + 1]);
                 }
             }
 
-            // D. Edge creation
-            // Pack the indices and the hybrid walkTime into EdgeTripsHandle
+            // E. Edge creation
             EdgeTripsHandle handle;
             handle.firstTripIndex = firstTripIdx;
-            handle.tripCount = (uint32_t)trips.size();
+            handle.tripCount = (uint32_t)filteredTrips.size();
             handle.firstSuffixIndex = firstSuffixIdx;
             handle.walkTime = walkTime;
 
-            // Finally, add the edge to the graph
             tdGraph.addTimeDependentEdge(u, v, handle);
             edgeCount++;
         }
 
         // 6. PURE WALKING EDGES
-        // Add remaining edges that are walk-only (no transit trips).
-        // This loop processes any walking paths remaining in minTransferTimes 
-        // (those that did not overlap with a bus route).
-        // It creates edges with tripCount = 0, meaning they are walk-only.
         for (const auto& pair : minTransferTimes) {
             const Vertex u = pair.first.first;
             const Vertex v = pair.first.second;
@@ -460,32 +473,36 @@ public:
             tdGraph.addTimeDependentEdge(u, v, handle);
             edgeCount++;
         }
-        
+
         std::cout << " done (" << edgeCount << " edges created)" << std::endl;
+
+        // Print filtering statistics
+        if (tdGraph.totalTripsBeforeFilter > 0) {
+            double reductionPercent = 100.0 * (1.0 - (double)tdGraph.totalTripsAfterFilter / tdGraph.totalTripsBeforeFilter);
+            std::cout << "Domination filtering: " << tdGraph.totalTripsBeforeFilter
+                      << " -> " << tdGraph.totalTripsAfterFilter << " trips ("
+                      << reductionPercent << "% reduction)" << std::endl;
+        }
 
         return tdGraph;
     }
 
     // [USAGE] Returns the total number of vertices (stops) in the graph.
-    // Passthrough to the underlying DynamicGraph implementation.
     inline size_t numVertices() const noexcept {
         return graph.numVertices();
     }
 
     // [USAGE] Returns an iterator/range for iterating over outgoing edges from vertex 'u'.
-    // Passthrough to the underlying DynamicGraph.
     inline auto edgesFrom(const Vertex u) const noexcept {
         return graph.edgesFrom(u);
     }
 
     // [USAGE] Returns the total number of edges in the graph.
-    // Passthrough to the underlying DynamicGraph.
     inline size_t numEdges() const noexcept {
         return graph.numEdges();
     }
 
     // [USAGE] Generic accessor for edge attributes.
-    // Allows retrieving the 'Function' (EdgeTripsHandle), 'ToVertex', or other metadata via templates.
     template<typename ATTRIBUTE>
     inline auto get(const ATTRIBUTE& attribute, const Edge edge) const noexcept {
         return graph.get(attribute, edge);
@@ -497,14 +514,13 @@ public:
     // [USAGE] Main relaxation function called by Dijkstra (runRelaxation) to evaluate edge weights.
     inline int getArrivalTime(const Edge edge, const int departureTime) const noexcept {
         const EdgeTripsHandle& h = graph.get(Function, edge);
-        
+
         int minArrivalTime = never;
-        
+
         auto begin = allDiscreteTrips.begin() + h.firstTripIndex;
         auto end = begin + h.tripCount;
-        
+
         // 1. Binary Search for first valid departure
-        // "Which buses can I catch if I arrive at departureTime?"
         auto it = std::lower_bound(begin, end, departureTime,
             [](const DiscreteTrip& trip, int time) {
                 return trip.departureTime < time;
@@ -512,9 +528,7 @@ public:
 
         if (it != end) {
             size_t localIdx = std::distance(begin, it);
-            // 2. Use Suffix Minima optimization to instantly get the best arrival
-            // among all remaining valid trips, avoiding a linear scan.
-            // "Of the buses I can catch, which gets me there the earliest?"
+            // 2. Use Suffix Minima optimization
             if (h.tripCount > 0) {
                 minArrivalTime = allSuffixMinArrivals[h.firstSuffixIndex + localIdx];
             } else {
@@ -564,19 +578,24 @@ public:
         IO::deserialize(fileName + ".data", tripOffsets, allTripLegs, allDiscreteTrips, allSuffixMinArrivals);
     }
 
-    // [FACTORY] Loads a TimeDependentGraph from a binary file on disk.
-    inline static TimeDependentGraph FromBinary(const std::string& fileName) noexcept {
-        TimeDependentGraph tdGraph;
+    // [FACTORY] Loads a TimeDependentGraphClassic from a binary file on disk.
+    inline static TimeDependentGraphClassic FromBinary(const std::string& fileName) noexcept {
+        TimeDependentGraphClassic tdGraph;
         tdGraph.deserialize(fileName);
         return tdGraph;
     }
 
-inline void printStatistics() const noexcept {
-        std::cout << "=== TimeDependentGraph Statistics ===" << std::endl;
+    // [STATISTICS] Get filtering statistics
+    inline void printStatistics() const noexcept {
+        std::cout << "=== TimeDependentGraphClassic Statistics ===" << std::endl;
         std::cout << "Vertices: " << numVertices() << std::endl;
         std::cout << "Edges: " << numEdges() << std::endl;
-        std::cout << "Total discrete trips: " << allDiscreteTrips.size() << std::endl;
-        std::cout << "Total trip legs: " << allTripLegs.size() << std::endl;
+        std::cout << "Total trips (before filtering): " << totalTripsBeforeFilter << std::endl;
+        std::cout << "Total trips (after filtering): " << totalTripsAfterFilter << std::endl;
+        if (totalTripsBeforeFilter > 0) {
+            double reductionPercent = 100.0 * (1.0 - (double)totalTripsAfterFilter / totalTripsBeforeFilter);
+            std::cout << "Reduction: " << reductionPercent << "%" << std::endl;
+        }
         std::cout << "============================================" << std::endl;
     }
 };

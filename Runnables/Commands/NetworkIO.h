@@ -1,3 +1,5 @@
+#include <rapidjson/document.h>
+#include <rapidjson/filereadstream.h>
 #pragma once
 
 #include <string>

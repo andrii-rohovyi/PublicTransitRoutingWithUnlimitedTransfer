@@ -5,7 +5,7 @@ list(APPEND CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${PROJECT_SOURCE_DIR}/cmake)
 #Compiler settings
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_FLAGS "-pipe -march=native -Wfatal-errors")
-set(CMAKE_CXX_FLAGS_DEBUG "-rdynamic -Werror -Wpedantic -pedantic-errors -Wall -Wextra -Wparentheses -D_GLIBCXX_DEBUG -g -fno-omit-frame-pointer -O0")
+set(CMAKE_CXX_FLAGS_DEBUG "-Werror -Wpedantic -pedantic-errors -Wall -Wextra -Wparentheses -D_GLIBCXX_DEBUG -g -fno-omit-frame-pointer -O0")
 set(CMAKE_CXX_FLAGS_RELEASE "-ffast-math -DNDEBUG -O3")
 
 #Libraries
@@ -15,8 +15,16 @@ find_package(Threads REQUIRED)
 find_package(OpenMP REQUIRED)
 
 function(add_runnable name)
-    add_executable(${ARGV})
+    add_executable(${name} ${ARGN})
     target_link_libraries(${name} PUBLIC OpenMP::OpenMP_CXX)
+
+    # Linux-only: link libnuma for <numa.h>
+    if(UNIX AND NOT APPLE)
+        target_link_libraries(${name} PRIVATE numa)
+    endif()
+
+    # -rdynamic is a linker option
+    target_link_options(${name} PRIVATE -rdynamic)
 endfunction()
 
 set(RUNNABLES DelayExperiments Network ULTRA ULTRAPHAST)

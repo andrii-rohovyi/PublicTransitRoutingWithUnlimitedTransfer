@@ -35,6 +35,7 @@ int main(int argc, char** argv) {
     new AugmentTripBasedShortcuts(shell);
     new ValidateStopToStopShortcuts(shell);
     new ValidateEventToEventShortcuts(shell);
+    new CompareFCvsClassicVariants(shell);
 
     //ULTRA
     new RunTransitiveCSAQueries(shell);
@@ -45,7 +46,6 @@ int main(int argc, char** argv) {
     new RunDijkstraRAPTORQueries(shell);
     new RunDijkstraRAPTORQueriesNoCH(shell);
     new RunTDDijkstraQueries(shell);
-    new RunTDDijkstraFullQueries(shell);
     new RunTDDijkstraQueriesFromBinary(shell);
     new RunHLRAPTORQueries(shell);
     new RunULTRARAPTORQueries(shell);
@@ -76,12 +76,15 @@ int main(int argc, char** argv) {
     new CheckDijkstraRAPTORPruning(shell);
     new CheckTDDijkstraPruning(shell);
     new CheckMCRPruning(shell);
-    new CompareMRwithTDDijkstra(shell);
     new CompareMRwithTDStatefulNoCH(shell);
     new CompareMRwithTDStatefulCoreCH(shell);
     new CheckTDDijkstraPruning(shell);
     new DebugSingleQuery(shell);
     new DebugExplicitQuery(shell);
+    new CompareTDGraphVariants(shell);
+    new CompareCSTvsClassicVariants(shell);
+    new CompareBSTvsClassicVariants(shell);
+    new CompareJTSvsTD(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);

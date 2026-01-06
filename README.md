@@ -166,15 +166,28 @@ The application ``DelayExperiments`` provides commands for evaluating Delay-ULTR
 * ``MeasureDelayULTRAQueryCoverage`` measures the result quality of TB using Delay-ULTRA shortcuts.
 * ``MeasureHypotheticalDelayULTRAQueryCoverage`` measures the result quality of TB using Delay-ULTRA shortcuts, assuming that updates can be performed instantly.
 * ``MeasureDelayULTRAQueryPerformance`` measures the query performance of TB using Delay-ULTRA shortcuts.
-  colima start --arch x86_64 --cpu 16 --memory 128 --disk 500
+  
 ```terminal
 colima delete
-colima start --arch x86_64 --cpu 64 --memory 110 --disk 500
+colima start --arch x86_64 --cpu 16 --memory 128 --disk 500
 colima ssh
 sudo apt-get update
 sudo apt-get install cmake build-essential
 sudo apt-get install libnuma-dev
-cmake .. -DCMAKE_BUILD_TYPE=Release && cmake --build . --target All --config Release
+
+# 1. Install ccache
+sudo apt-get update && sudo apt-get install -y ccache
+
+# 2. Tell CMake to use it
+rm -rf cmake-build-release
+cmake -B cmake-build-release \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache
+
+# 3. Build (use -j to combine caching with multi-core power)
+cmake --build cmake-build-release -j
+
 ```
 
 ```

@@ -9,7 +9,7 @@ using namespace Shell;
 int main(int argc, char** argv) {
     CommandLineParser clp(argc, argv);
     checkAsserts();
-    Shell::Shell shell;
+    ::Shell::Shell shell;
     new AnalyzeHeadwayDistribution(shell);
     new AnalyzeTransferSlacks(shell);
     new BuildFakeDelayData(shell);
