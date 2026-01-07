@@ -41,6 +41,31 @@ public:
 
 };
 
+class RAPTORToIntermediate : public ParameterizedCommand {
+
+public:
+    RAPTORToIntermediate(BasicShell& shell) :
+        ParameterizedCommand(shell, "raptorToIntermediate", "Converts RAPTOR network format to binary intermediate data.") {
+        addParameter("Input file");
+        addParameter("Output file");
+    }
+
+    virtual void execute() noexcept {
+        const std::string inputFile = getParameter("Input file");
+        const std::string outputFile = getParameter("Output file");
+
+        RAPTOR::Data raptor = RAPTOR::Data::FromBinary(inputFile);
+        raptor.printInfo();
+        Graph::printInfo(raptor.transferGraph);
+        raptor.transferGraph.printAnalysis();
+
+        Intermediate::Data inter = Intermediate::Data::FromRAPTOR(raptor);
+        inter.printInfo();
+        inter.serialize(outputFile);
+    }
+
+};
+
 class GTFSToIntermediate : public ParameterizedCommand {
 
 public:
