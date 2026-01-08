@@ -58,6 +58,7 @@ int main(int argc, char** argv) {
     new CheckCSAPruning(shell);
     new RunTransitiveTBQueries(shell);
     new RunULTRATBQueries(shell);
+    new ComputeStopToStopShortcutsJTS(shell);
 
     //McULTRA
     new RunTransitiveMcRAPTORQueries(shell);
