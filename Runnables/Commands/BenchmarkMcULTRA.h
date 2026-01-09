@@ -9,6 +9,7 @@ using namespace Shell;
 
 #include "../../Algorithms/RAPTOR/Bounded/BoundedMcRAPTOR.h"
 #include "../../Algorithms/RAPTOR/ULTRABounded/UBMHydRA.h"
+#include "../../Algorithms/Dijkstra/TimeDependentMCDijkstra.h"
 #include "../../Algorithms/RAPTOR/ULTRABounded/UBMRAPTOR.h"
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/RAPTOR/McRAPTOR.h"
@@ -21,6 +22,308 @@ using namespace Shell;
 #include "../../DataStructures/CSA/Data.h"
 #include "../../DataStructures/RAPTOR/Data.h"
 #include "../../DataStructures/TripBased/Data.h"
+
+class CompareMCTDDvsMCR : public ParameterizedCommand {
+public:
+    CompareMCTDDvsMCR(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareMCTDDvsMCR",
+            "Compares Multi-Criteria Time-Dependent Dijkstra with MCR algorithm.") {
+        addParameter("RAPTOR input file");
+        addParameter("Intermediate input file");  // Added: for TDGraph
+        addParameter("CH data");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // Load RAPTOR data for MCR
+        std::cout << "=== Loading Data ===" << std::endl;
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+
+        // Load CH data
+        CH::CH ch(getParameter("CH data"));
+        std::cout << "CH vertices: " << ch.numVertices() << std::endl;
+
+        // Build TimeDependentGraph from Intermediate data
+        std::cout << "\n=== Building Time-Dependent Graph ===" << std::endl;
+        auto tdBuildStart = std::chrono::high_resolution_clock::now();
+
+        // Load Intermediate data and build TDGraph
+        Intermediate::Data inter = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        inter.printInfo();
+        TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(inter);
+
+        auto tdBuildEnd = std::chrono::high_resolution_clock::now();
+        auto tdBuildTime = std::chrono::duration_cast<std::chrono::milliseconds>(tdBuildEnd - tdBuildStart);
+        std::cout << "TD Graph build time: " << tdBuildTime.count() << " ms" << std::endl;
+        tdGraph.printStatistics();
+
+        // Initialize algorithms
+        RAPTOR::MCR<true, RAPTOR::AggregateProfiler> mcrAlgo(raptorData, ch);
+        TDD::TimeDependentMCDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>
+            mctddAlgo(tdGraph, raptorData.numberOfStops(), &ch);
+
+        // Generate queries
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
+        std::cout << "\n=== Running " << n << " Queries ===" << std::endl;
+
+        // Storage for results - use simple pair vectors for comparison
+        std::vector<std::vector<std::pair<int, int>>> mcrResults;  // (arrivalTime, walkingDistance)
+        std::vector<std::vector<std::pair<int, int>>> mctddResults;
+        mcrResults.reserve(n);
+        mctddResults.reserve(n);
+
+        // Run MCR
+        std::cout << "\n--- Running MCR ---" << std::endl;
+        auto mcrStart = std::chrono::high_resolution_clock::now();
+
+        double mcrJourneys = 0;
+        for (const VertexQuery& query : queries) {
+            mcrAlgo.run(query.source, query.departureTime, query.target);
+            auto rawResults = mcrAlgo.getResults();
+            std::vector<std::pair<int, int>> converted;
+            for (const auto& r : rawResults) {
+                converted.push_back({r.arrivalTime, r.walkingDistance});
+            }
+            mcrResults.push_back(std::move(converted));
+            mcrJourneys += mcrResults.back().size();
+        }
+
+        auto mcrEnd = std::chrono::high_resolution_clock::now();
+        auto mcrTime = std::chrono::duration_cast<std::chrono::microseconds>(mcrEnd - mcrStart);
+
+        std::cout << "MCR Statistics:" << std::endl;
+        mcrAlgo.getProfiler().printStatistics();
+        std::cout << "Total time: " << mcrTime.count() / 1000.0 << " ms" << std::endl;
+        std::cout << "Avg time per query: " << mcrTime.count() / (double)n << " µs" << std::endl;
+        std::cout << "Avg journeys: " << String::prettyDouble(mcrJourneys / n) << std::endl;
+
+        // Run MC-TDD
+        std::cout << "\n--- Running MC-TDD ---" << std::endl;
+        auto mctddStart = std::chrono::high_resolution_clock::now();
+
+        double mctddJourneys = 0;
+        for (const VertexQuery& query : queries) {
+            mctddAlgo.run(query.source, query.departureTime, query.target);
+            auto rawResults = mctddAlgo.getResults();
+            std::vector<std::pair<int, int>> converted;
+            for (const auto& r : rawResults) {
+                converted.push_back({r.arrivalTime, r.walkingDistance});
+            }
+            mctddResults.push_back(std::move(converted));
+            mctddJourneys += mctddResults.back().size();
+        }
+
+        auto mctddEnd = std::chrono::high_resolution_clock::now();
+        auto mctddTime = std::chrono::duration_cast<std::chrono::microseconds>(mctddEnd - mctddStart);
+
+        std::cout << "MC-TDD Statistics:" << std::endl;
+        mctddAlgo.getProfiler().printStatistics();
+        std::cout << "Total time: " << mctddTime.count() / 1000.0 << " ms" << std::endl;
+        std::cout << "Avg time per query: " << mctddTime.count() / (double)n << " µs" << std::endl;
+        std::cout << "Avg journeys: " << String::prettyDouble(mctddJourneys / n) << std::endl;
+
+        // Compare results
+        std::cout << "\n=== Comparing Results ===" << std::endl;
+        bool allCorrect = compareResults(mcrResults, mctddResults, queries);
+
+        // Summary
+        std::cout << "\n=== Summary ===" << std::endl;
+        std::cout << std::fixed << std::setprecision(2);
+        std::cout << "MCR total time:    " << mcrTime.count() / 1000.0 << " ms" << std::endl;
+        std::cout << "MC-TDD total time: " << mctddTime.count() / 1000.0 << " ms" << std::endl;
+        std::cout << "Speedup: " << (double)mcrTime.count() / mctddTime.count() << "x" << std::endl;
+        std::cout << "Correctness: " << (allCorrect ? "✅ PASSED" : "❌ FAILED") << std::endl;
+    }
+
+private:
+    // Compare results from both algorithms (using simple pairs)
+    bool compareResults(
+        const std::vector<std::vector<std::pair<int, int>>>& mcrResults,
+        const std::vector<std::vector<std::pair<int, int>>>& mctddResults,
+        const std::vector<VertexQuery>& queries) const {
+
+        bool allCorrect = true;
+        size_t mismatchCount = 0;
+        size_t extraInMCR = 0;
+        size_t extraInMCTDD = 0;
+
+        for (size_t i = 0; i < queries.size(); ++i) {
+            std::vector<std::pair<int, int>> mcr = mcrResults[i];
+            std::vector<std::pair<int, int>> mctdd = mctddResults[i];
+
+            // Sort both for comparison
+            std::sort(mcr.begin(), mcr.end());
+            std::sort(mctdd.begin(), mctdd.end());
+
+            // Compare sizes
+            if (mcr.size() != mctdd.size()) {
+                if (mismatchCount < 5) {
+                    std::cout << "Query " << i << ": Size mismatch - MCR: " << mcr.size()
+                              << ", MC-TDD: " << mctdd.size() << std::endl;
+                }
+                allCorrect = false;
+                mismatchCount++;
+
+                if (mcr.size() > mctdd.size()) extraInMCR += (mcr.size() - mctdd.size());
+                else extraInMCTDD += (mctdd.size() - mcr.size());
+                continue;
+            }
+
+            // Compare individual labels
+            for (size_t j = 0; j < mcr.size(); ++j) {
+                if (mcr[j] != mctdd[j]) {
+                    if (mismatchCount < 5) {
+                        std::cout << "Query " << i << ", label " << j << ": Value mismatch" << std::endl;
+                        std::cout << "  MCR:    (arr=" << mcr[j].first
+                                  << ", walk=" << mcr[j].second << ")" << std::endl;
+                        std::cout << "  MC-TDD: (arr=" << mctdd[j].first
+                                  << ", walk=" << mctdd[j].second << ")" << std::endl;
+                    }
+                    allCorrect = false;
+                    mismatchCount++;
+                    break;
+                }
+            }
+        }
+
+        std::cout << "Comparison complete:" << std::endl;
+        std::cout << "  Total queries: " << queries.size() << std::endl;
+        std::cout << "  Mismatches: " << mismatchCount << std::endl;
+        if (!allCorrect) {
+            std::cout << "  Extra labels in MCR: " << extraInMCR << std::endl;
+            std::cout << "  Extra labels in MC-TDD: " << extraInMCTDD << std::endl;
+        }
+
+        return allCorrect;
+    }
+};
+
+// =========================================================================
+// Run MC-TDD Queries (standalone)
+// =========================================================================
+
+class RunMCTDDQueries : public ParameterizedCommand {
+public:
+    RunMCTDDQueries(BasicShell& shell) :
+        ParameterizedCommand(shell, "runMCTDDQueries",
+            "Runs the given number of random Multi-Criteria Time-Dependent Dijkstra queries.") {
+        addParameter("TD Graph file");
+        addParameter("CH data");
+        addParameter("Number of stops");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // Load TD Graph
+        std::cout << "Loading Time-Dependent Graph..." << std::endl;
+        TimeDependentGraph tdGraph = TimeDependentGraph::FromBinary(getParameter("TD Graph file"));
+        tdGraph.printStatistics();
+
+        // Load CH data
+        CH::CH ch(getParameter("CH data"));
+
+        const size_t numStops = getParameter<size_t>("Number of stops");
+
+        // Initialize algorithm
+        TDD::TimeDependentMCDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>
+            algorithm(tdGraph, numStops, &ch);
+
+        // Generate queries
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
+
+        // Run queries
+        double numJourneys = 0;
+        for (const VertexQuery& query : queries) {
+            algorithm.run(query.source, query.departureTime, query.target);
+            numJourneys += algorithm.getResults().size();
+        }
+
+        algorithm.getProfiler().printStatistics();
+        std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys / n) << std::endl;
+    }
+};
+
+// =========================================================================
+// Correctness Check: MC-TDD vs MCR
+// =========================================================================
+
+class CheckMCTDDCorrectness : public ParameterizedCommand {
+public:
+    CheckMCTDDCorrectness(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkMCTDDCorrectness",
+            "Validates MC-TDD results against MCR (ground truth).") {
+        addParameter("RAPTOR input file");
+        addParameter("CH data");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // This is essentially the same as CompareMCTDDvsMCR but focuses on correctness
+        // and provides more detailed error reporting
+
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+
+        CH::CH ch(getParameter("CH data"));
+
+        // Build TDGraph (same as comparison command)
+        TimeDependentGraph tdGraph; // = buildTDGraphFromRAPTOR(raptorData);
+
+        RAPTOR::MCR<true, RAPTOR::NoProfiler> mcrAlgo(raptorData, ch);
+        TDD::TimeDependentMCDijkstra<TimeDependentGraph, TDD::NoProfiler, false, true>
+            mctddAlgo(tdGraph, raptorData.numberOfStops(), &ch);
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
+
+        size_t passed = 0;
+        size_t failed = 0;
+
+        for (size_t i = 0; i < n; ++i) {
+            const VertexQuery& query = queries[i];
+
+            mcrAlgo.run(query.source, query.departureTime, query.target);
+            mctddAlgo.run(query.source, query.departureTime, query.target);
+
+            auto mcrResults = mcrAlgo.getResults();
+            auto mctddResultsRaw = mctddAlgo.getResults();
+
+            // Convert and compare
+            std::vector<std::pair<int, int>> mcrPairs, mctddPairs;
+            for (const auto& r : mcrResults) {
+                mcrPairs.push_back({r.arrivalTime, r.walkingDistance});
+            }
+            for (const auto& r : mctddResultsRaw) {
+                mctddPairs.push_back({r.arrivalTime, r.walkingDistance});
+            }
+
+            std::sort(mcrPairs.begin(), mcrPairs.end());
+            std::sort(mctddPairs.begin(), mctddPairs.end());
+
+            if (mcrPairs == mctddPairs) {
+                passed++;
+            } else {
+                failed++;
+                if (failed <= 10) {
+                    std::cout << "FAILED Query " << i << ": source=" << query.source
+                              << ", target=" << query.target
+                              << ", dep=" << query.departureTime << std::endl;
+                    std::cout << "  MCR results: " << mcrPairs.size() << std::endl;
+                    std::cout << "  MC-TDD results: " << mctddPairs.size() << std::endl;
+                }
+            }
+        }
+
+        std::cout << "\n=== Correctness Results ===" << std::endl;
+        std::cout << "Passed: " << passed << "/" << n << std::endl;
+        std::cout << "Failed: " << failed << "/" << n << std::endl;
+        std::cout << "Status: " << (failed == 0 ? "✅ ALL PASSED" : "❌ SOME FAILED") << std::endl;
+    }
+};
 
 class RunTransitiveMcRAPTORQueries : public ParameterizedCommand {
 

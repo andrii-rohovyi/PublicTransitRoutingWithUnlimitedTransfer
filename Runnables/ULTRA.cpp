@@ -86,6 +86,9 @@ int main(int argc, char** argv) {
     new CompareCSTvsClassicVariants(shell);
     new CompareBSTvsClassicVariants(shell);
     new CompareJTSvsTD(shell);
+    new CompareMCTDDvsMCR(shell);
+    new RunMCTDDQueries(shell);
+    new CheckMCTDDCorrectness(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);
