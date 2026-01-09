@@ -36,6 +36,7 @@ int main(int argc, char** argv) {
     new ValidateStopToStopShortcuts(shell);
     new ValidateEventToEventShortcuts(shell);
     new CompareFCvsClassicVariants(shell);
+    new CompareAllAlgorithms(shell);
 
     //ULTRA
     new RunTransitiveCSAQueries(shell);

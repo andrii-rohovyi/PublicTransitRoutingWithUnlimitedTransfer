@@ -13,6 +13,7 @@ using namespace Shell;
 #include "../../Algorithms/CSA/ULTRACSA.h"
 #include "../../Algorithms/RAPTOR/HLRAPTOR.h"
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulBucketCH.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStateful.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulClassic.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulFC.h"
@@ -34,6 +35,354 @@ using namespace Shell;
 #include "../../DataStructures/TripBased/Data.h"
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../DataStructures/Intermediate/Data.h"
+
+
+class CompareAllAlgorithms : public ParameterizedCommand {
+
+public:
+    CompareAllAlgorithms(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareAllAlgorithms",
+            "Compares MR (Core-CH), TD-Dijkstra (Core-CH), TD-Dijkstra (Bucket-CH), and ULTRA-CSA (Bucket-CH).") {
+        addParameter("RAPTOR input file");
+        addParameter("CSA input file");
+        addParameter("Intermediate input file");
+        addParameter("Core CH input file");
+        addParameter("Full CH input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // ==================== LOAD DATA ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "         LOADING DATA" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        // Load RAPTOR data
+        std::cout << "Loading RAPTOR data..." << std::endl;
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+
+        // Load CSA data
+        std::cout << "\nLoading CSA data..." << std::endl;
+        CSA::Data csaData = CSA::Data::FromBinary(getParameter("CSA input file"));
+        csaData.sortConnectionsAscending();
+        csaData.printInfo();
+
+        // Load Intermediate data and build TD graph
+        std::cout << "\nLoading Intermediate data..." << std::endl;
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        std::cout << "Intermediate data: " << intermediateData.numberOfStops() << " stops, "
+                  << intermediateData.numberOfTrips() << " trips" << std::endl;
+
+        std::cout << "\nBuilding TimeDependentGraph..." << std::endl;
+        Timer buildTimer;
+        TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(intermediateData);
+        double tdGraphBuildTime = buildTimer.elapsedMilliseconds();
+        std::cout << "TD graph created: " << tdGraph.numVertices() << " vertices, "
+                  << tdGraph.numEdges() << " edges in " << String::msToString(tdGraphBuildTime) << std::endl;
+
+        // Load Core-CH
+        std::cout << "\nLoading Core-CH..." << std::endl;
+        CH::CH coreCH(getParameter("Core CH input file"));
+        std::cout << "Core-CH loaded: " << coreCH.numVertices() << " vertices" << std::endl;
+
+        // Load Full CH (for Bucket-CH)
+        std::cout << "\nLoading Full CH (for Bucket-CH)..." << std::endl;
+        CH::CH fullCH(getParameter("Full CH input file"));
+        std::cout << "Full CH loaded: " << fullCH.numVertices() << " vertices" << std::endl;
+
+        // ==================== GENERATE QUERIES ====================
+        const size_t n = getParameter<size_t>("Number of queries");
+
+        // Use the smaller vertex count to ensure valid queries for all algorithms
+        const size_t maxVertices = std::min(coreCH.numVertices(), fullCH.numVertices());
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(maxVertices, n);
+
+        std::cout << "\nGenerated " << n << " random queries" << std::endl;
+
+        // Results storage
+        std::vector<int> results_mr_corech;
+        std::vector<int> results_td_corech;
+        std::vector<int> results_td_bucketch;
+        std::vector<int> results_ultra_csa;
+
+        results_mr_corech.reserve(n);
+        results_td_corech.reserve(n);
+        results_td_bucketch.reserve(n);
+        results_ultra_csa.reserve(n);
+
+        // ==================== ALGORITHM 1: MR with Core-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  1. MR (DijkstraRAPTOR) with Core-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        using MRCoreCH = RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false>;
+        MRCoreCH algorithm_mr(raptorData, coreCH);
+
+        Timer mrTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_mr.run(query.source, query.departureTime, query.target);
+            results_mr_corech.push_back(algorithm_mr.getEarliestArrivalTime(query.target));
+
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  MR (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double mrTime = mrTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- MR (Core-CH) Statistics ---" << std::endl;
+        algorithm_mr.getProfiler().printStatistics();
+        std::cout << "Total time: " << String::msToString(mrTime)
+                  << " (" << (mrTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 2: TD-Dijkstra with Core-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  2. TD-Dijkstra with Core-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        using TDCoreCH = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        TDCoreCH algorithm_td_corech(tdGraph, raptorData.numberOfStops(), &coreCH);
+
+        Timer tdCoreCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_td_corech.run(query.source, query.departureTime, query.target);
+            results_td_corech.push_back(algorithm_td_corech.getArrivalTime(query.target));
+
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double tdCoreCHTime = tdCoreCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- TD-Dijkstra (Core-CH) Statistics ---" << std::endl;
+        algorithm_td_corech.getProfiler().printStatistics();
+        std::cout << "Total time: " << String::msToString(tdCoreCHTime)
+                  << " (" << (tdCoreCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 3: TD-Dijkstra with Bucket-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  3. TD-Dijkstra with Bucket-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << "Building Bucket-CH initial transfers (this may take a while)..." << std::endl;
+        Timer bucketBuildTimer;
+
+        using TDBucketCH = TimeDependentDijkstraStatefulBucketCH<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        TDBucketCH algorithm_td_bucketch(tdGraph, raptorData.numberOfStops(), &fullCH);
+
+        double bucketBuildTime = bucketBuildTimer.elapsedMilliseconds();
+        std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketBuildTime) << std::endl;
+
+        Timer tdBucketCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_td_bucketch.run(query.source, query.departureTime, query.target);
+            results_td_bucketch.push_back(algorithm_td_bucketch.getArrivalTime(query.target));
+
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double tdBucketCHTime = tdBucketCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- TD-Dijkstra (Bucket-CH) Statistics ---" << std::endl;
+        algorithm_td_bucketch.getProfiler().printStatistics();
+        std::cout << "Total time: " << String::msToString(tdBucketCHTime)
+                  << " (" << (tdBucketCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 4: ULTRA-CSA with Bucket-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  4. ULTRA-CSA with Bucket-CH (Full CH)" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        CSA::ULTRACSA<true, 0, CSA::AggregateProfiler> algorithm_ultra_csa(csaData, fullCH);
+
+        Timer ultraCSATimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_ultra_csa.run(query.source, query.departureTime, query.target);
+            results_ultra_csa.push_back(algorithm_ultra_csa.getEarliestArrivalTime(query.target));
+
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  ULTRA-CSA: " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double ultraCSATime = ultraCSATimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- ULTRA-CSA (Bucket-CH) Statistics ---" << std::endl;
+        algorithm_ultra_csa.getProfiler().printStatistics();
+        std::cout << "Total time: " << String::msToString(ultraCSATime)
+                  << " (" << (ultraCSATime / n) << " ms/query)" << std::endl;
+
+        // ==================== CORRECTNESS COMPARISON ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "         CORRECTNESS COMPARISON" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        // Use MR (Core-CH) as ground truth
+        auto compareResults = [&](const std::string& name, const std::vector<int>& results) {
+            size_t matches = 0;
+            size_t mismatches = 0;
+            size_t bothUnreachable = 0;
+            size_t onlyGroundTruthReachable = 0;
+            size_t onlyTestReachable = 0;
+            int maxDiff = 0;
+            double totalDiff = 0;
+
+            std::vector<size_t> mismatchIndices;
+
+            for (size_t i = 0; i < n; ++i) {
+                bool gtReachable = (results_mr_corech[i] != never && results_mr_corech[i] != intMax);
+                bool testReachable = (results[i] != never && results[i] != intMax);
+
+                if (!gtReachable && !testReachable) {
+                    bothUnreachable++;
+                    matches++;
+                } else if (gtReachable && !testReachable) {
+                    onlyGroundTruthReachable++;
+                    mismatches++;
+                    mismatchIndices.push_back(i);
+                } else if (!gtReachable && testReachable) {
+                    onlyTestReachable++;
+                    mismatches++;
+                    mismatchIndices.push_back(i);
+                } else {
+                    // Both reachable
+                    int diff = results[i] - results_mr_corech[i];
+                    if (diff == 0) {
+                        matches++;
+                    } else {
+                        mismatches++;
+                        if (std::abs(diff) > maxDiff) maxDiff = std::abs(diff);
+                        totalDiff += std::abs(diff);
+                        mismatchIndices.push_back(i);
+                    }
+                }
+            }
+
+            std::cout << name << " vs MR (Core-CH):" << std::endl;
+            std::cout << "  Matches:              " << matches << "/" << n
+                      << " (" << (100.0 * matches / n) << "%)" << std::endl;
+            std::cout << "  Mismatches:           " << mismatches << std::endl;
+
+            if (mismatches > 0) {
+                std::cout << "  Both unreachable:     " << bothUnreachable << std::endl;
+                std::cout << "  Only GT reachable:    " << onlyGroundTruthReachable << std::endl;
+                std::cout << "  Only test reachable:  " << onlyTestReachable << std::endl;
+                std::cout << "  Max difference:       " << maxDiff << "s" << std::endl;
+                if (mismatches - bothUnreachable - onlyGroundTruthReachable - onlyTestReachable > 0) {
+                    std::cout << "  Avg difference:       " << (totalDiff / mismatches) << "s" << std::endl;
+                }
+
+                // Print first few mismatches
+                std::cout << "  First mismatches:" << std::endl;
+                for (size_t j = 0; j < std::min(mismatchIndices.size(), size_t(5)); ++j) {
+                    size_t i = mismatchIndices[j];
+                    std::cout << "    Query " << i << ": GT=" << results_mr_corech[i]
+                              << ", Test=" << results[i]
+                              << " (diff=" << (results[i] - results_mr_corech[i]) << "s)" << std::endl;
+                }
+            }
+
+            if (matches == n) {
+                std::cout << "  ✅ PERFECT MATCH!" << std::endl;
+            } else {
+                std::cout << "  ❌ MISMATCHES FOUND" << std::endl;
+            }
+            std::cout << std::endl;
+
+            return matches == n;
+        };
+
+        std::cout << "Ground Truth: MR (Core-CH)\n" << std::endl;
+
+        bool td_corech_correct = compareResults("TD-Dijkstra (Core-CH)", results_td_corech);
+        bool td_bucketch_correct = compareResults("TD-Dijkstra (Bucket-CH)", results_td_bucketch);
+        bool ultra_csa_correct = compareResults("ULTRA-CSA (Bucket-CH)", results_ultra_csa);
+
+        // ==================== PERFORMANCE SUMMARY ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "         PERFORMANCE SUMMARY" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << std::fixed << std::setprecision(3);
+
+        std::cout << "┌─────────────────────────────┬──────────────┬─────────────┬───────────┐" << std::endl;
+        std::cout << "│ Algorithm                   │ Total Time   │ Per Query   │ Correct?  │" << std::endl;
+        std::cout << "├─────────────────────────────┼──────────────┼─────────────┼───────────┤" << std::endl;
+
+        std::cout << "│ MR (Core-CH)                │ "
+                  << std::setw(10) << String::msToString(mrTime) << " │ "
+                  << std::setw(9) << (mrTime / n) << " ms │ "
+                  << "Ground T. │" << std::endl;
+
+        std::cout << "│ TD-Dijkstra (Core-CH)       │ "
+                  << std::setw(10) << String::msToString(tdCoreCHTime) << " │ "
+                  << std::setw(9) << (tdCoreCHTime / n) << " ms │ "
+                  << (td_corech_correct ? "    ✅    " : "    ❌    ") << "│" << std::endl;
+
+        std::cout << "│ TD-Dijkstra (Bucket-CH)     │ "
+                  << std::setw(10) << String::msToString(tdBucketCHTime) << " │ "
+                  << std::setw(9) << (tdBucketCHTime / n) << " ms │ "
+                  << (td_bucketch_correct ? "    ✅    " : "    ❌    ") << "│" << std::endl;
+
+        std::cout << "│ ULTRA-CSA (Bucket-CH)       │ "
+                  << std::setw(10) << String::msToString(ultraCSATime) << " │ "
+                  << std::setw(9) << (ultraCSATime / n) << " ms │ "
+                  << (ultra_csa_correct ? "    ✅    " : "    ❌    ") << "│" << std::endl;
+
+        std::cout << "└─────────────────────────────┴──────────────┴─────────────┴───────────┘" << std::endl;
+
+        // Speedup comparison
+        std::cout << "\nSpeedup vs MR (Core-CH):" << std::endl;
+        std::cout << "  TD-Dijkstra (Core-CH):    " << (mrTime / tdCoreCHTime) << "x" << std::endl;
+        std::cout << "  TD-Dijkstra (Bucket-CH):  " << (mrTime / tdBucketCHTime) << "x" << std::endl;
+        std::cout << "  ULTRA-CSA (Bucket-CH):    " << (mrTime / ultraCSATime) << "x" << std::endl;
+
+        // Preprocessing overhead
+        std::cout << "\nPreprocessing Overhead:" << std::endl;
+        std::cout << "  TD Graph build time:      " << String::msToString(tdGraphBuildTime) << std::endl;
+        std::cout << "  Bucket-CH build time:     " << String::msToString(bucketBuildTime) << std::endl;
+
+        // Break-even analysis
+        if (bucketBuildTime > 0 && tdBucketCHTime < tdCoreCHTime) {
+            double querySavings = (tdCoreCHTime - tdBucketCHTime) / n;  // ms saved per query
+            double breakEven = bucketBuildTime / querySavings;
+            std::cout << "\nBucket-CH Break-even: ~" << (int)breakEven
+                      << " queries to amortize preprocessing" << std::endl;
+        }
+
+        // ==================== FINAL CONCLUSION ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "            CONCLUSION" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        if (td_corech_correct && td_bucketch_correct && ultra_csa_correct) {
+            std::cout << "✅ All algorithms produce IDENTICAL results!" << std::endl;
+        } else {
+            std::cout << "❌ Some algorithms produced DIFFERENT results:" << std::endl;
+            if (!td_corech_correct) std::cout << "   - TD-Dijkstra (Core-CH)" << std::endl;
+            if (!td_bucketch_correct) std::cout << "   - TD-Dijkstra (Bucket-CH)" << std::endl;
+            if (!ultra_csa_correct) std::cout << "   - ULTRA-CSA (Bucket-CH)" << std::endl;
+        }
+
+        // Find fastest
+        double fastest = std::min({mrTime, tdCoreCHTime, tdBucketCHTime, ultraCSATime});
+        std::cout << "\nFastest algorithm: ";
+        if (fastest == mrTime) std::cout << "MR (Core-CH)";
+        else if (fastest == tdCoreCHTime) std::cout << "TD-Dijkstra (Core-CH)";
+        else if (fastest == tdBucketCHTime) std::cout << "TD-Dijkstra (Bucket-CH)";
+        else std::cout << "ULTRA-CSA (Bucket-CH)";
+        std::cout << " at " << String::msToString(fastest) << std::endl;
+    }
+};
 
 class CompareShortcutSearchSingleSource : public ParameterizedCommand {
 public:
