@@ -4,7 +4,6 @@
 #include <string>
 
 #include "../../Algorithms/RAPTOR/ULTRA/Builder.h"
-#include "../../Algorithms/RAPTOR/ULTRA/BuilderJTS.h"
 #include "../../Algorithms/RAPTOR/ULTRA/McBuilder.h"
 #include "../../Algorithms/RAPTOR/ULTRA/MultimodalMcBuilder.h"
 #include "../../Algorithms/TripBased/Preprocessing/DelayULTRABuilder.h"
@@ -13,7 +12,6 @@
 #include "../../Algorithms/TripBased/Preprocessing/ShortcutAugmenter.h"
 #include "../../Algorithms/TripBased/Preprocessing/StopEventGraphBuilder.h"
 #include "../../Algorithms/TripBased/Preprocessing/ULTRABuilder.h"
-#include "../../Algorithms/RAPTOR/ULTRA/ShortcutSearchJTS.h"
 
 #include "../../DataStructures/Graph/Graph.h"
 #include "../../DataStructures/RAPTOR/Data.h"
@@ -92,88 +90,6 @@ public:
 
         Graph::move(std::move(temp2), raptorData.transferGraph);
         raptorData.serialize(getParameter("Output file"));
-    }
-};
-
-class ComputeStopToStopShortcutsJTS : public ParameterizedCommand {
-
-public:
-    ComputeStopToStopShortcutsJTS(BasicShell& shell) :
-        ParameterizedCommand(shell, "computeStopToStopShortcutsJTS",
-                            "Computes stop-to-stop transfer shortcuts using ULTRA with TimeDependentGraph (JTS variant).") {
-        addParameter("Intermediate data file");
-        addParameter("Output file");
-        addParameter("Witness limit");
-        addParameter("Number of threads", "max");
-        addParameter("Pin multiplier", "1");
-        addParameter("Count optimal candidates?", "false");
-        addParameter("Ignore isolated candidates?", "false");
-    }
-
-    virtual void execute() noexcept {
-        if (getParameter<bool>("Count optimal candidates?")) {
-            chooseIgnoreIsolated<true>();
-        } else {
-            chooseIgnoreIsolated<false>();
-        }
-    }
-
-private:
-    inline size_t getNumberOfThreads() const noexcept {
-        if (getParameter("Number of threads") == "max") {
-            return numberOfCores();
-        } else {
-            return getParameter<int>("Number of threads");
-        }
-    }
-
-    template<bool COUNT_OPTIMAL_CANDIDATES>
-    inline void chooseIgnoreIsolated() const noexcept {
-        if (getParameter<bool>("Ignore isolated candidates?")) {
-            run<COUNT_OPTIMAL_CANDIDATES, true>();
-        } else {
-            run<COUNT_OPTIMAL_CANDIDATES, false>();
-        }
-    }
-
-    template<bool COUNT_OPTIMAL_CANDIDATES, bool IGNORE_ISOLATED_CANDIDATES>
-    inline void run() const noexcept {
-        const std::string intermediateFile = getParameter("Intermediate data file");
-        const std::string outputFile = getParameter("Output file");
-        const size_t witnessLimit = getParameter<size_t>("Witness limit");
-        const size_t numberOfThreads = getNumberOfThreads();
-        const size_t pinMultiplier = getParameter<size_t>("Pin multiplier");
-
-        std::cout << "Loading Intermediate data from " << intermediateFile << "..." << std::endl;
-        Intermediate::Data interData = Intermediate::Data::FromBinary(intermediateFile);
-        interData.printInfo();
-
-        std::cout << "Building TimeDependentGraph..." << std::endl;
-        TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(interData);
-        tdGraph.printStatistics();
-
-        RAPTOR::ULTRA::BuilderJTS<false, COUNT_OPTIMAL_CANDIDATES, IGNORE_ISOLATED_CANDIDATES>
-            shortcutGraphBuilder(interData, tdGraph);
-
-        std::cout << "Computing stop-to-stop ULTRA shortcuts using JTS (parallel with "
-                  << numberOfThreads << " threads)." << std::endl;
-
-        shortcutGraphBuilder.computeShortcuts(
-            ThreadPinning(numberOfThreads, pinMultiplier),
-            witnessLimit);
-
-        std::cout << "Building RAPTOR data..." << std::endl;
-        RAPTOR::Data raptorData = RAPTOR::Data::FromIntermediate(interData);
-
-        Graph::move(std::move(shortcutGraphBuilder.getShortcutGraph()), raptorData.transferGraph);
-
-        std::cout << "\nFinal transfer graph:" << std::endl;
-        Graph::printInfo(raptorData.transferGraph);
-        raptorData.transferGraph.printAnalysis();
-
-        std::cout << "Saving to " << outputFile << "..." << std::endl;
-        raptorData.serialize(outputFile);
-        std::cout << "Done." << std::endl;
     }
 };
 

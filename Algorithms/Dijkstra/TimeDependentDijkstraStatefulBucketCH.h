@@ -5,6 +5,7 @@
 #include "../../Helpers/Types.h"
 #include "../../Helpers/Timer.h"
 #include "../../DataStructures/Container/ExternalKHeap.h"
+#include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../Algorithms/CH/CH.h"
 #include "../../Algorithms/CH/Query/BucketQuery.h"
 #include "Profiler.h"

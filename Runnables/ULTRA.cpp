@@ -59,9 +59,6 @@ int main(int argc, char** argv) {
     new CheckCSAPruning(shell);
     new RunTransitiveTBQueries(shell);
     new RunULTRATBQueries(shell);
-    new ComputeStopToStopShortcutsJTS(shell);
-    new CompareShortcutSearchFirstN(shell);
-    new CompareShortcutSearchSingleSource(shell);
 
     //McULTRA
     new RunTransitiveMcRAPTORQueries(shell);
