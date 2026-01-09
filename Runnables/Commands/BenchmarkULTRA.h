@@ -35,6 +35,186 @@ using namespace Shell;
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../DataStructures/Intermediate/Data.h"
 
+class CompareShortcutSearchSingleSource : public ParameterizedCommand {
+public:
+    CompareShortcutSearchSingleSource(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareShortcutSearchSingleSource",
+            "Compares ShortcutSearch vs ShortcutSearchJTS for a single source stop") {
+        addParameter("RAPTOR data");
+        addParameter("Intermediate data");
+        addParameter("Source stop ID");
+        addParameter("Witness limit", "300");
+    }
+
+    virtual void execute() noexcept {
+        const std::string raptorFile = getParameter("RAPTOR data");
+        const std::string intermediateFile = getParameter("Intermediate data");
+        const StopId sourceStop = StopId(getParameter<int>("Source stop ID"));
+        const int witnessLimit = getParameter<int>("Witness limit");
+
+        // Load RAPTOR data
+        RAPTOR::Data raptorData(raptorFile);
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+
+        // Load Intermediate data
+        Intermediate::Data interData(intermediateFile);
+        interData.printInfo();
+
+        // Build TimeDependentGraph from Intermediate data
+        std::cout << "Building TimeDependentGraph..." << std::flush;
+        Timer buildTimer;
+        TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(interData);
+        std::cout << " done in " << buildTimer.elapsedMilliseconds() << " ms" << std::endl;
+        tdGraph.printStatistics();
+
+        const int minTime = 0;
+        const int maxTime = 24 * 60 * 60;  // One day
+
+        // Run original ShortcutSearch
+        DynamicTransferGraph shortcutGraph1;
+        shortcutGraph1.addVertices(raptorData.numberOfStops());
+        RAPTOR::ULTRA::ShortcutSearch<false, true, true> search1(raptorData, shortcutGraph1, witnessLimit);
+
+        Timer timer1;
+        search1.run(sourceStop, minTime, maxTime);
+        double time1 = timer1.elapsedMilliseconds();
+
+        // Run JTS ShortcutSearch
+        DynamicTransferGraph shortcutGraph2;
+        shortcutGraph2.addVertices(interData.numberOfStops());
+        RAPTOR::ULTRA::ShortcutSearchJTS<false, true, true> search2(interData, tdGraph, shortcutGraph2, witnessLimit);
+
+        Timer timer2;
+        search2.run(sourceStop, minTime, maxTime);
+        double time2 = timer2.elapsedMilliseconds();
+
+        // Compare results
+        std::cout << "\n=== Results for source stop " << sourceStop << " ===" << std::endl;
+        std::cout << "Original: " << shortcutGraph1.numEdges() << " edges in " << time1 << " ms" << std::endl;
+        std::cout << "JTS:      " << shortcutGraph2.numEdges() << " edges in " << time2 << " ms" << std::endl;
+
+        // Detailed comparison
+        compareShortcuts(shortcutGraph1, shortcutGraph2);
+    }
+
+private:
+    void compareShortcuts(const DynamicTransferGraph& g1, const DynamicTransferGraph& g2) {
+        std::set<std::tuple<Vertex, Vertex, int>> edges1, edges2;
+
+        for (Vertex v : g1.vertices()) {
+            for (Edge e : g1.edgesFrom(v)) {
+                edges1.insert({v, g1.get(ToVertex, e), g1.get(TravelTime, e)});
+            }
+        }
+
+        for (Vertex v : g2.vertices()) {
+            for (Edge e : g2.edgesFrom(v)) {
+                edges2.insert({v, g2.get(ToVertex, e), g2.get(TravelTime, e)});
+            }
+        }
+
+        // Find differences
+        std::vector<std::tuple<Vertex, Vertex, int>> onlyIn1, onlyIn2;
+
+        std::set_difference(edges1.begin(), edges1.end(),
+                           edges2.begin(), edges2.end(),
+                           std::back_inserter(onlyIn1));
+
+        std::set_difference(edges2.begin(), edges2.end(),
+                           edges1.begin(), edges1.end(),
+                           std::back_inserter(onlyIn2));
+
+        std::cout << "\nEdges only in Original: " << onlyIn1.size() << std::endl;
+        for (size_t i = 0; i < std::min(onlyIn1.size(), size_t(10)); i++) {
+            auto [from, to, time] = onlyIn1[i];
+            std::cout << "  " << from << " -> " << to << " (time=" << time << ")" << std::endl;
+        }
+
+        std::cout << "\nEdges only in JTS: " << onlyIn2.size() << std::endl;
+        for (size_t i = 0; i < std::min(onlyIn2.size(), size_t(10)); i++) {
+            auto [from, to, time] = onlyIn2[i];
+            std::cout << "  " << from << " -> " << to << " (time=" << time << ")" << std::endl;
+        }
+
+        if (onlyIn1.empty() && onlyIn2.empty()) {
+            std::cout << "\n✓ IDENTICAL RESULTS!" << std::endl;
+        } else {
+            std::cout << "\n✗ DIFFERENT RESULTS!" << std::endl;
+        }
+    }
+};
+
+class CompareShortcutSearchFirstN : public ParameterizedCommand {
+public:
+    CompareShortcutSearchFirstN(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareShortcutSearchFirstN",
+            "Compares ShortcutSearch vs ShortcutSearchJTS for first N stops") {
+        addParameter("RAPTOR data");
+        addParameter("Intermediate data");
+        addParameter("Number of stops", "10");
+        addParameter("Witness limit", "300");
+    }
+
+    virtual void execute() noexcept {
+        const std::string raptorFile = getParameter("RAPTOR data");
+        const std::string intermediateFile = getParameter("Intermediate data");
+        const int numStops = getParameter<int>("Number of stops");
+        const int witnessLimit = getParameter<int>("Witness limit");
+
+        // Load data
+        RAPTOR::Data raptorData(raptorFile);
+        raptorData.useImplicitDepartureBufferTimes();
+
+        Intermediate::Data interData(intermediateFile);
+
+        // Build TimeDependentGraph
+        std::cout << "Building TimeDependentGraph..." << std::flush;
+        TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(interData);
+        std::cout << " done." << std::endl;
+
+        const int minTime = 0;
+        const int maxTime = 24 * 60 * 60;
+
+        size_t totalEdges1 = 0, totalEdges2 = 0;
+        size_t matchingStops = 0, differentStops = 0;
+
+        for (int i = 0; i < numStops && i < (int)raptorData.numberOfStops(); i++) {
+            StopId source = StopId(i);
+
+            // Run original
+            DynamicTransferGraph g1;
+            g1.addVertices(raptorData.numberOfStops());
+            RAPTOR::ULTRA::ShortcutSearch<false, true, true> s1(raptorData, g1, witnessLimit);
+            s1.run(source, minTime, maxTime);
+
+            // Run JTS
+            DynamicTransferGraph g2;
+            g2.addVertices(interData.numberOfStops());
+            RAPTOR::ULTRA::ShortcutSearchJTS<false, true, true> s2(interData, tdGraph, g2, witnessLimit);
+            s2.run(source, minTime, maxTime);
+
+            totalEdges1 += g1.numEdges();
+            totalEdges2 += g2.numEdges();
+
+            if (g1.numEdges() == g2.numEdges()) {
+                matchingStops++;
+            } else {
+                differentStops++;
+                std::cout << "Stop " << i << ": Original=" << g1.numEdges()
+                          << " JTS=" << g2.numEdges() << std::endl;
+            }
+        }
+
+        std::cout << "\n=== Summary ===" << std::endl;
+        std::cout << "Tested: " << numStops << " stops" << std::endl;
+        std::cout << "Matching: " << matchingStops << std::endl;
+        std::cout << "Different: " << differentStops << std::endl;
+        std::cout << "Total edges Original: " << totalEdges1 << std::endl;
+        std::cout << "Total edges JTS: " << totalEdges2 << std::endl;
+    }
+};
+
 class BuildTDGraph : public ParameterizedCommand {
 
 public:

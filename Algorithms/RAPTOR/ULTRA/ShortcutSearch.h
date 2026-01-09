@@ -254,6 +254,18 @@ private:
         routesServingUpdatedStops.sortKeys();
     }
 
+    inline std::vector<Shortcut> runSingleDeparture(const StopId source, const int departureTime) noexcept {
+        if (stationOfStop[source].representative != source) return {};
+        setSource(source);
+
+        // Create a single departure label
+        ConsolidatedDepartureLabel label(departureTime);
+        // ... populate label.routes ...
+
+        runForDepartureTime(label);
+        return shortcuts;  // Return shortcuts for this departure only
+    }
+
     template<int CURRENT>
     inline void scanRoutes() noexcept {
         static_assert((CURRENT == 1) | (CURRENT == 2), "Invalid round!");
@@ -493,6 +505,11 @@ private:
 
     inline void arrivalByRoute1(const StopId stop, const int arrivalTime, const StopId parent) noexcept {
         //Mark journey as candidate or witness
+        if constexpr (Debug) {
+            std::cout << "    R1: stop=" << stop << " arr=" << arrivalTime
+                      << " parent=" << parent << " isCandidate="
+                      << (stationOfStop[parent].representative == sourceStation.representative) << std::endl;
+        }
         if (stationOfStop[parent].representative == sourceStation.representative) {
             oneTripTransferParent[stop] = stop;
         } else {

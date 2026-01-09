@@ -33,7 +33,8 @@ public:
         data(data),
         tdGraph(tdGraph),
         numberOfStops(data.numberOfStops()) {
-        shortcutGraph.addVertices(data.transferGraph.numVertices());
+        // Only add stop vertices, not all vertices
+        shortcutGraph.addVertices(numberOfStops);
     }
 
     void computeShortcuts(const ThreadPinning& threadPinning, const int witnessLimit,
@@ -46,7 +47,8 @@ public:
         std::vector<DynamicTransferGraph> threadGraphs(numThreads);
         std::vector<size_t> threadOptimalCandidates(numThreads, 0);
 
-        Timer timer;
+        Timer totalTimer;
+        Timer computeTimer;
 
         omp_set_num_threads(numThreads);
         #pragma omp parallel
@@ -55,7 +57,7 @@ public:
             pinThreadToCoreId((threadId * pinMultiplier) % numberOfCores());
 
             DynamicTransferGraph& localGraph = threadGraphs[threadId];
-            localGraph.addVertices(data.transferGraph.numVertices());
+            localGraph.addVertices(numberOfStops);  // Only stops
 
             ShortcutSearchJTS<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates> search(
                 data, tdGraph, localGraph, witnessLimit);
@@ -72,7 +74,9 @@ public:
         }
 
         progress.finished();
+        const double computeTime = computeTimer.elapsedMilliseconds();
 
+        Timer mergeTimer;
         std::cout << "Merging thread-local graphs..." << std::flush;
         for (size_t t = 0; t < numThreads; t++) {
             for (const Vertex from : threadGraphs[t].vertices()) {
@@ -87,8 +91,11 @@ public:
             }
         }
         std::cout << " done." << std::endl;
+        const double mergeTime = mergeTimer.elapsedMilliseconds();
 
-        std::cout << "Time: " << String::msToString(timer.elapsedMilliseconds()) << std::endl;
+        std::cout << "Computation time: " << String::msToString(computeTime) << std::endl;
+        std::cout << "Merge time:       " << String::msToString(mergeTime) << std::endl;
+        std::cout << "Total time:       " << String::msToString(totalTimer.elapsedMilliseconds()) << std::endl;
         std::cout << "Number of shortcuts: " << String::prettyInt(shortcutGraph.numEdges()) << std::endl;
 
         if constexpr (CountOptimalCandidates) {
