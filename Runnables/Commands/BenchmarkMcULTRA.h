@@ -61,6 +61,7 @@ public:
 
         // Initialize algorithms
         RAPTOR::MCR<true, RAPTOR::AggregateProfiler> mcrAlgo(raptorData, ch);
+        // Enable target pruning for performance
         TDD::TimeDependentMCDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>
             mctddAlgo(tdGraph, raptorData.numberOfStops(), &ch);
 
@@ -69,9 +70,9 @@ public:
         const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
         std::cout << "\n=== Running " << n << " Queries ===" << std::endl;
 
-        // Storage for results - use simple pair vectors for comparison
-        std::vector<std::vector<std::pair<int, int>>> mcrResults;  // (arrivalTime, walkingDistance)
-        std::vector<std::vector<std::pair<int, int>>> mctddResults;
+        // Storage for results - use tuple vectors for comparison (arr, walk, trips)
+        std::vector<std::vector<std::tuple<int, int, int>>> mcrResults;
+        std::vector<std::vector<std::tuple<int, int, int>>> mctddResults;
         mcrResults.reserve(n);
         mctddResults.reserve(n);
 
@@ -83,9 +84,9 @@ public:
         for (const VertexQuery& query : queries) {
             mcrAlgo.run(query.source, query.departureTime, query.target);
             auto rawResults = mcrAlgo.getResults();
-            std::vector<std::pair<int, int>> converted;
+            std::vector<std::tuple<int, int, int>> converted;
             for (const auto& r : rawResults) {
-                converted.push_back({r.arrivalTime, r.walkingDistance});
+                converted.push_back({r.arrivalTime, r.walkingDistance, (int)r.numberOfTrips});
             }
             mcrResults.push_back(std::move(converted));
             mcrJourneys += mcrResults.back().size();
@@ -108,9 +109,9 @@ public:
         for (const VertexQuery& query : queries) {
             mctddAlgo.run(query.source, query.departureTime, query.target);
             auto rawResults = mctddAlgo.getResults();
-            std::vector<std::pair<int, int>> converted;
+            std::vector<std::tuple<int, int, int>> converted;
             for (const auto& r : rawResults) {
-                converted.push_back({r.arrivalTime, r.walkingDistance});
+                converted.push_back({r.arrivalTime, r.walkingDistance, (int)r.numberOfTrips});
             }
             mctddResults.push_back(std::move(converted));
             mctddJourneys += mctddResults.back().size();
@@ -127,7 +128,98 @@ public:
 
         // Compare results
         std::cout << "\n=== Comparing Results ===" << std::endl;
+
+        // Debug: Print detailed results for first few queries
+        for (size_t i = 0; i < std::min(size_t(3), n); ++i) {
+            std::cout << "\n--- Query " << i << " Debug ---" << std::endl;
+            std::cout << "Source: " << queries[i].source << ", Target: " << queries[i].target
+                      << ", Departure: " << queries[i].departureTime << std::endl;
+
+            auto mcr = mcrResults[i];
+            auto mctdd = mctddResults[i];
+
+            std::sort(mcr.begin(), mcr.end());
+            std::sort(mctdd.begin(), mctdd.end());
+
+            std::cout << "MCR results (" << mcr.size() << "):" << std::endl;
+            for (size_t j = 0; j < std::min(mcr.size(), size_t(10)); ++j) {
+                std::cout << "  [" << j << "] arr=" << std::get<0>(mcr[j])
+                          << ", walk=" << std::get<1>(mcr[j])
+                          << ", trips=" << std::get<2>(mcr[j]) << std::endl;
+            }
+            if (mcr.size() > 10) std::cout << "  ... and " << (mcr.size() - 10) << " more" << std::endl;
+
+            std::cout << "MC-TDD results (" << mctdd.size() << "):" << std::endl;
+            for (size_t j = 0; j < std::min(mctdd.size(), size_t(10)); ++j) {
+                std::cout << "  [" << j << "] arr=" << std::get<0>(mctdd[j])
+                          << ", walk=" << std::get<1>(mctdd[j])
+                          << ", trips=" << std::get<2>(mctdd[j]) << std::endl;
+            }
+            if (mctdd.size() > 10) std::cout << "  ... and " << (mctdd.size() - 10) << " more" << std::endl;
+
+            // Find labels in MCR but not in MC-TDD
+            std::cout << "Labels in MCR but NOT in MC-TDD:" << std::endl;
+            int missingCount = 0;
+            for (const auto& label : mcr) {
+                bool found = false;
+                for (const auto& tddLabel : mctdd) {
+                    if (std::get<0>(label) == std::get<0>(tddLabel) &&
+                        std::get<1>(label) == std::get<1>(tddLabel) &&
+                        std::get<2>(label) == std::get<2>(tddLabel)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && missingCount < 10) {
+                    std::cout << "  MISSING: arr=" << std::get<0>(label)
+                              << ", walk=" << std::get<1>(label)
+                              << ", trips=" << std::get<2>(label) << std::endl;
+                    missingCount++;
+                }
+            }
+            if (missingCount == 0) std::cout << "  (none)" << std::endl;
+
+            // Find labels in MC-TDD but not in MCR
+            std::cout << "Labels in MC-TDD but NOT in MCR:" << std::endl;
+            int extraCount = 0;
+            for (const auto& tddLabel : mctdd) {
+                bool found = false;
+                for (const auto& label : mcr) {
+                    if (std::get<0>(label) == std::get<0>(tddLabel) &&
+                        std::get<1>(label) == std::get<1>(tddLabel) &&
+                        std::get<2>(label) == std::get<2>(tddLabel)) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && extraCount < 10) {
+                    std::cout << "  EXTRA: arr=" << std::get<0>(tddLabel)
+                              << ", walk=" << std::get<1>(tddLabel)
+                              << ", trips=" << std::get<2>(tddLabel) << std::endl;
+                    extraCount++;
+                }
+            }
+            if (extraCount == 0) std::cout << "  (none)" << std::endl;
+        }
+
         bool allCorrect = compareResults(mcrResults, mctddResults, queries);
+
+        // Additional 2-criteria comparison (ignoring trips)
+        std::cout << "\n=== 2-Criteria Comparison (arrival + walking only) ===" << std::endl;
+        size_t queries2CMatch = 0;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            std::set<std::pair<int,int>> mcrPairs, mctddPairs;
+            for (const auto& r : mcrResults[i]) {
+                mcrPairs.insert({std::get<0>(r), std::get<1>(r)});
+            }
+            for (const auto& r : mctddResults[i]) {
+                mctddPairs.insert({std::get<0>(r), std::get<1>(r)});
+            }
+            if (mcrPairs == mctddPairs) {
+                queries2CMatch++;
+            }
+        }
+        std::cout << "Queries with matching (arrival, walk) pairs: " << queries2CMatch << "/" << queries.size() << std::endl;
 
         // Summary
         std::cout << "\n=== Summary ===" << std::endl;
@@ -139,10 +231,10 @@ public:
     }
 
 private:
-    // Compare results from both algorithms (using simple pairs)
+    // Compare results from both algorithms (using tuples: arr, walk, trips)
     bool compareResults(
-        const std::vector<std::vector<std::pair<int, int>>>& mcrResults,
-        const std::vector<std::vector<std::pair<int, int>>>& mctddResults,
+        const std::vector<std::vector<std::tuple<int, int, int>>>& mcrResults,
+        const std::vector<std::vector<std::tuple<int, int, int>>>& mctddResults,
         const std::vector<VertexQuery>& queries) const {
 
         bool allCorrect = true;
@@ -151,8 +243,8 @@ private:
         size_t extraInMCTDD = 0;
 
         for (size_t i = 0; i < queries.size(); ++i) {
-            std::vector<std::pair<int, int>> mcr = mcrResults[i];
-            std::vector<std::pair<int, int>> mctdd = mctddResults[i];
+            auto mcr = mcrResults[i];
+            auto mctdd = mctddResults[i];
 
             // Sort both for comparison
             std::sort(mcr.begin(), mcr.end());
@@ -177,10 +269,12 @@ private:
                 if (mcr[j] != mctdd[j]) {
                     if (mismatchCount < 5) {
                         std::cout << "Query " << i << ", label " << j << ": Value mismatch" << std::endl;
-                        std::cout << "  MCR:    (arr=" << mcr[j].first
-                                  << ", walk=" << mcr[j].second << ")" << std::endl;
-                        std::cout << "  MC-TDD: (arr=" << mctdd[j].first
-                                  << ", walk=" << mctdd[j].second << ")" << std::endl;
+                        std::cout << "  MCR:    (arr=" << std::get<0>(mcr[j])
+                                  << ", walk=" << std::get<1>(mcr[j])
+                                  << ", trips=" << std::get<2>(mcr[j]) << ")" << std::endl;
+                        std::cout << "  MC-TDD: (arr=" << std::get<0>(mctdd[j])
+                                  << ", walk=" << std::get<1>(mctdd[j])
+                                  << ", trips=" << std::get<2>(mctdd[j]) << ")" << std::endl;
                     }
                     allCorrect = false;
                     mismatchCount++;
@@ -324,6 +418,7 @@ public:
         std::cout << "Status: " << (failed == 0 ? "✅ ALL PASSED" : "❌ SOME FAILED") << std::endl;
     }
 };
+
 
 class RunTransitiveMcRAPTORQueries : public ParameterizedCommand {
 
