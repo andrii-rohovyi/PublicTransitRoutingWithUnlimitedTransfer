@@ -42,7 +42,7 @@ class CompareAllAlgorithms : public ParameterizedCommand {
 public:
     CompareAllAlgorithms(BasicShell& shell) :
         ParameterizedCommand(shell, "compareAllAlgorithms",
-            "Compares MR (Core-CH), TD-Dijkstra (Core-CH), TD-Dijkstra (Bucket-CH), and ULTRA-CSA (Bucket-CH).") {
+            "Compares MR (Core-CH), TD-Dijkstra Classic, JTS (Core-CH), JTS (Bucket-CH), and ULTRA-CSA (Bucket-CH).") {
         addParameter("RAPTOR input file");
         addParameter("CSA input file");
         addParameter("Intermediate input file");
@@ -69,18 +69,25 @@ public:
         csaData.sortConnectionsAscending();
         csaData.printInfo();
 
-        // Load Intermediate data and build TD graph
+        // Load Intermediate data and build TD graphs
         std::cout << "\nLoading Intermediate data..." << std::endl;
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
         std::cout << "Intermediate data: " << intermediateData.numberOfStops() << " stops, "
                   << intermediateData.numberOfTrips() << " trips" << std::endl;
 
-        std::cout << "\nBuilding TimeDependentGraph..." << std::endl;
+        std::cout << "\nBuilding TimeDependentGraph (JTS)..." << std::endl;
         Timer buildTimer;
         TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(intermediateData);
         double tdGraphBuildTime = buildTimer.elapsedMilliseconds();
         std::cout << "TD graph created: " << tdGraph.numVertices() << " vertices, "
                   << tdGraph.numEdges() << " edges in " << String::msToString(tdGraphBuildTime) << std::endl;
+
+        std::cout << "\nBuilding TimeDependentGraphClassic (TD-Dijkstra Classic)..." << std::endl;
+        buildTimer.restart();
+        TimeDependentGraphClassic tdGraphClassic = TimeDependentGraphClassic::FromIntermediate(intermediateData);
+        double tdGraphClassicBuildTime = buildTimer.elapsedMilliseconds();
+        std::cout << "TD Classic graph created: " << tdGraphClassic.numVertices() << " vertices, "
+                  << tdGraphClassic.numEdges() << " edges in " << String::msToString(tdGraphClassicBuildTime) << std::endl;
 
         // Load Core-CH
         std::cout << "\nLoading Core-CH..." << std::endl;
@@ -103,11 +110,13 @@ public:
 
         // Results storage
         std::vector<int> results_mr_corech;
+        std::vector<int> results_td_classic;
         std::vector<int> results_td_corech;
         std::vector<int> results_td_bucketch;
         std::vector<int> results_ultra_csa;
 
         results_mr_corech.reserve(n);
+        results_td_classic.reserve(n);
         results_td_corech.reserve(n);
         results_td_bucketch.reserve(n);
         results_ultra_csa.reserve(n);
@@ -138,9 +147,35 @@ public:
         std::cout << "Total time: " << String::msToString(mrTime)
                   << " (" << (mrTime / n) << " ms/query)" << std::endl;
 
-        // ==================== ALGORITHM 2: TD-Dijkstra with Core-CH ====================
+        // ==================== ALGORITHM 2: TD-Dijkstra Classic with Core-CH ====================
         std::cout << "\n========================================" << std::endl;
-        std::cout << "  2. TD-Dijkstra with Core-CH" << std::endl;
+        std::cout << "  2. TD-Dijkstra Classic with Core-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        using TDClassic = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        TDClassic algorithm_td_classic(tdGraphClassic, raptorData.numberOfStops(), &coreCH);
+
+        Timer tdClassicTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_td_classic.run(query.source, query.departureTime, query.target);
+            results_td_classic.push_back(algorithm_td_classic.getArrivalTime(query.target));
+
+            if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD Classic (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double tdClassicTime = tdClassicTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+
+        std::cout << "--- TD-Dijkstra Classic (Core-CH) Statistics ---" << std::endl;
+        algorithm_td_classic.getProfiler().printStatistics();
+        std::cout << "Total time: " << String::msToString(tdClassicTime)
+                  << " (" << (tdClassicTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 3: JTS (TD-Dijkstra) with Core-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  3. JTS with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
         using TDCoreCH = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
@@ -153,20 +188,20 @@ public:
             results_td_corech.push_back(algorithm_td_corech.getArrivalTime(query.target));
 
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
-                std::cout << "\r  TD (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+                std::cout << "\r  JTS (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
         double tdCoreCHTime = tdCoreCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
 
-        std::cout << "--- TD-Dijkstra (Core-CH) Statistics ---" << std::endl;
+        std::cout << "--- JTS (Core-CH) Statistics ---" << std::endl;
         algorithm_td_corech.getProfiler().printStatistics();
         std::cout << "Total time: " << String::msToString(tdCoreCHTime)
                   << " (" << (tdCoreCHTime / n) << " ms/query)" << std::endl;
 
-        // ==================== ALGORITHM 3: TD-Dijkstra with Bucket-CH ====================
+        // ==================== ALGORITHM 4: JTS (TD-Dijkstra) with Bucket-CH ====================
         std::cout << "\n========================================" << std::endl;
-        std::cout << "  3. TD-Dijkstra with Bucket-CH" << std::endl;
+        std::cout << "  4. JTS with Bucket-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
         std::cout << "Building Bucket-CH initial transfers (this may take a while)..." << std::endl;
@@ -185,20 +220,20 @@ public:
             results_td_bucketch.push_back(algorithm_td_bucketch.getArrivalTime(query.target));
 
             if ((i + 1) % 10 == 0 || i + 1 == queries.size()) {
-                std::cout << "\r  TD (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+                std::cout << "\r  JTS (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
             }
         }
         double tdBucketCHTime = tdBucketCHTimer.elapsedMilliseconds();
         std::cout << std::endl;
 
-        std::cout << "--- TD-Dijkstra (Bucket-CH) Statistics ---" << std::endl;
+        std::cout << "--- JTS (Bucket-CH) Statistics ---" << std::endl;
         algorithm_td_bucketch.getProfiler().printStatistics();
         std::cout << "Total time: " << String::msToString(tdBucketCHTime)
                   << " (" << (tdBucketCHTime / n) << " ms/query)" << std::endl;
 
-        // ==================== ALGORITHM 4: ULTRA-CSA with Bucket-CH ====================
+        // ==================== ALGORITHM 5: ULTRA-CSA with Bucket-CH ====================
         std::cout << "\n========================================" << std::endl;
-        std::cout << "  4. ULTRA-CSA with Bucket-CH (Full CH)" << std::endl;
+        std::cout << "  5. ULTRA-CSA with Bucket-CH (Full CH)" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
         CSA::ULTRACSA<true, 0, CSA::AggregateProfiler> algorithm_ultra_csa(csaData, fullCH);
@@ -303,8 +338,9 @@ public:
 
         std::cout << "Ground Truth: MR (Core-CH)\n" << std::endl;
 
-        bool td_corech_correct = compareResults("TD-Dijkstra (Core-CH)", results_td_corech);
-        bool td_bucketch_correct = compareResults("TD-Dijkstra (Bucket-CH)", results_td_bucketch);
+        bool td_classic_correct = compareResults("TD-Dijkstra Classic (Core-CH)", results_td_classic);
+        bool td_corech_correct = compareResults("JTS (Core-CH)", results_td_corech);
+        bool td_bucketch_correct = compareResults("JTS (Bucket-CH)", results_td_bucketch);
         bool ultra_csa_correct = compareResults("ULTRA-CSA (Bucket-CH)", results_ultra_csa);
 
         // ==================== PERFORMANCE SUMMARY ====================
@@ -323,12 +359,17 @@ public:
                   << std::setw(9) << (mrTime / n) << " ms │ "
                   << "Ground T. │" << std::endl;
 
-        std::cout << "│ TD-Dijkstra (Core-CH)       │ "
+        std::cout << "│ TD-Dijkstra Classic         │ "
+                  << std::setw(10) << String::msToString(tdClassicTime) << " │ "
+                  << std::setw(9) << (tdClassicTime / n) << " ms │ "
+                  << (td_classic_correct ? "    ✅    " : "    ❌    ") << "│" << std::endl;
+
+        std::cout << "│ JTS (Core-CH)               │ "
                   << std::setw(10) << String::msToString(tdCoreCHTime) << " │ "
                   << std::setw(9) << (tdCoreCHTime / n) << " ms │ "
                   << (td_corech_correct ? "    ✅    " : "    ❌    ") << "│" << std::endl;
 
-        std::cout << "│ TD-Dijkstra (Bucket-CH)     │ "
+        std::cout << "│ JTS (Bucket-CH)             │ "
                   << std::setw(10) << String::msToString(tdBucketCHTime) << " │ "
                   << std::setw(9) << (tdBucketCHTime / n) << " ms │ "
                   << (td_bucketch_correct ? "    ✅    " : "    ❌    ") << "│" << std::endl;
@@ -342,14 +383,20 @@ public:
 
         // Speedup comparison
         std::cout << "\nSpeedup vs MR (Core-CH):" << std::endl;
-        std::cout << "  TD-Dijkstra (Core-CH):    " << (mrTime / tdCoreCHTime) << "x" << std::endl;
-        std::cout << "  TD-Dijkstra (Bucket-CH):  " << (mrTime / tdBucketCHTime) << "x" << std::endl;
+        std::cout << "  TD-Dijkstra Classic:      " << (mrTime / tdClassicTime) << "x" << std::endl;
+        std::cout << "  JTS (Core-CH):            " << (mrTime / tdCoreCHTime) << "x" << std::endl;
+        std::cout << "  JTS (Bucket-CH):          " << (mrTime / tdBucketCHTime) << "x" << std::endl;
         std::cout << "  ULTRA-CSA (Bucket-CH):    " << (mrTime / ultraCSATime) << "x" << std::endl;
+
+        // JTS vs TD Classic comparison
+        std::cout << "\nJTS vs TD-Dijkstra Classic:" << std::endl;
+        std::cout << "  JTS (Core-CH) speedup:    " << (tdClassicTime / tdCoreCHTime) << "x" << std::endl;
 
         // Preprocessing overhead
         std::cout << "\nPreprocessing Overhead:" << std::endl;
-        std::cout << "  TD Graph build time:      " << String::msToString(tdGraphBuildTime) << std::endl;
-        std::cout << "  Bucket-CH build time:     " << String::msToString(bucketBuildTime) << std::endl;
+        std::cout << "  TD Graph (JTS) build:         " << String::msToString(tdGraphBuildTime) << std::endl;
+        std::cout << "  TD Graph Classic build:       " << String::msToString(tdGraphClassicBuildTime) << std::endl;
+        std::cout << "  Bucket-CH build time:         " << String::msToString(bucketBuildTime) << std::endl;
 
         // Break-even analysis
         if (bucketBuildTime > 0 && tdBucketCHTime < tdCoreCHTime) {
@@ -364,21 +411,23 @@ public:
         std::cout << "            CONCLUSION" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
-        if (td_corech_correct && td_bucketch_correct && ultra_csa_correct) {
+        if (td_classic_correct && td_corech_correct && td_bucketch_correct && ultra_csa_correct) {
             std::cout << "✅ All algorithms produce IDENTICAL results!" << std::endl;
         } else {
             std::cout << "❌ Some algorithms produced DIFFERENT results:" << std::endl;
-            if (!td_corech_correct) std::cout << "   - TD-Dijkstra (Core-CH)" << std::endl;
-            if (!td_bucketch_correct) std::cout << "   - TD-Dijkstra (Bucket-CH)" << std::endl;
+            if (!td_classic_correct) std::cout << "   - TD-Dijkstra Classic (Core-CH)" << std::endl;
+            if (!td_corech_correct) std::cout << "   - JTS (Core-CH)" << std::endl;
+            if (!td_bucketch_correct) std::cout << "   - JTS (Bucket-CH)" << std::endl;
             if (!ultra_csa_correct) std::cout << "   - ULTRA-CSA (Bucket-CH)" << std::endl;
         }
 
         // Find fastest
-        double fastest = std::min({mrTime, tdCoreCHTime, tdBucketCHTime, ultraCSATime});
+        double fastest = std::min({mrTime, tdClassicTime, tdCoreCHTime, tdBucketCHTime, ultraCSATime});
         std::cout << "\nFastest algorithm: ";
         if (fastest == mrTime) std::cout << "MR (Core-CH)";
-        else if (fastest == tdCoreCHTime) std::cout << "TD-Dijkstra (Core-CH)";
-        else if (fastest == tdBucketCHTime) std::cout << "TD-Dijkstra (Bucket-CH)";
+        else if (fastest == tdClassicTime) std::cout << "TD-Dijkstra Classic (Core-CH)";
+        else if (fastest == tdCoreCHTime) std::cout << "JTS (Core-CH)";
+        else if (fastest == tdBucketCHTime) std::cout << "JTS (Bucket-CH)";
         else std::cout << "ULTRA-CSA (Bucket-CH)";
         std::cout << " at " << String::msToString(fastest) << std::endl;
     }
