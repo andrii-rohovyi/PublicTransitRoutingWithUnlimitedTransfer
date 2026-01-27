@@ -21,9 +21,10 @@ namespace TDD {
 // =========================================================================
 // Multi-Criteria Time-Dependent Dijkstra (MC-TDD)
 // =========================================================================
-// This algorithm optimizes for TWO criteria:
+// This algorithm optimizes for THREE criteria:
 //   1. Arrival Time (minimize)
 //   2. Walking Distance (minimize)
+//   3. Number of Trips (minimize)
 //
 // It maintains Pareto-optimal labels at each node, similar to MCR.
 // =========================================================================
@@ -40,10 +41,37 @@ public:
     // Label Structures
     // =========================================================================
 
+    // Vehicle Label for Stop Event Pruning (MC-TDD Optimization)
+    struct VehicleLabel {
+        int timeStamp = -1;
+        static constexpr int MAX_TRACKED_TRIPS = 16;
+        int bestWalk[MAX_TRACKED_TRIPS];
+
+        inline bool update(const int walk, const size_t trips, const int globalTime) noexcept {
+            // Lazy reset
+            if (timeStamp != globalTime) {
+                timeStamp = globalTime;
+                for (int i = 0; i < MAX_TRACKED_TRIPS; ++i) bestWalk[i] = INFTY;
+            }
+
+            if (trips >= MAX_TRACKED_TRIPS) return true; // Cannot track/prune high trip counts safely
+
+            // Dominance Check: Dominated if any path with FEWER or EQUAL trips has <= walk
+            for (size_t k = 0; k <= trips; ++k) {
+                if (bestWalk[k] <= walk) return false; // Dominated or Identical
+            }
+
+            // Update best walk for this specific trip count
+            bestWalk[trips] = walk;
+            return true;
+        }
+    };
+
     // Multi-criteria label for Pareto-optimal search
     struct MCLabel {
         int arrivalTime = never;
         int walkingDistance = INFTY;
+        size_t numberOfTrips = 0;
 
         // Parent tracking for path reconstruction
         Vertex parentStop = noVertex;
@@ -51,20 +79,25 @@ public:
         int parentDepartureTime = never;
         int tripId = -1;  // -1 means walking
 
-        MCLabel() = default;
+                MCLabel() = default;
 
-        MCLabel(int arr, int walk, Vertex parent = noVertex, size_t pIdx = -1, int pDep = never, int trip = -1)
-            : arrivalTime(arr), walkingDistance(walk),
-              parentStop(parent), parentIndex(pIdx), parentDepartureTime(pDep), tripId(trip) {}
+                MCLabel(int arr, int walk, size_t trips, Vertex parent = noVertex, size_t pIdx = -1, int pDep = never, int trip = -1)
+                        : arrivalTime(arr), walkingDistance(walk), numberOfTrips(trips),
+                            parentStop(parent), parentIndex(pIdx), parentDepartureTime(pDep), tripId(trip) {}
 
         // Dominance check: this dominates other if better/equal in ALL criteria
         inline bool dominates(const MCLabel& other) const noexcept {
-            return arrivalTime <= other.arrivalTime && walkingDistance <= other.walkingDistance;
+            return arrivalTime <= other.arrivalTime &&
+                   walkingDistance <= other.walkingDistance &&
+                   numberOfTrips <= other.numberOfTrips;
         }
 
         // Strict dominance (for pruning)
         inline bool strictlyDominates(const MCLabel& other) const noexcept {
-            return dominates(other) && (arrivalTime < other.arrivalTime || walkingDistance < other.walkingDistance);
+            return dominates(other) &&
+                   (arrivalTime < other.arrivalTime ||
+                    walkingDistance < other.walkingDistance ||
+                    numberOfTrips < other.numberOfTrips);
         }
 
         // For heap ordering - use sum as priority (can be tuned)
@@ -154,17 +187,6 @@ public:
         }
     };
 
-    // Vehicle (on-trip) label - minimal for scanning
-    struct VehicleLabel {
-        int arrivalTime = intMax;
-        int walkingDistance = INFTY;
-        int timeStamp = -1;
-
-        inline bool dominates(int arr, int walk) const noexcept {
-            return arrivalTime <= arr && walkingDistance <= walk;
-        }
-    };
-
     // Result structure matching RAPTOR::WalkingParetoLabel
     struct WalkingParetoLabel {
         int arrivalTime;
@@ -175,7 +197,7 @@ public:
         WalkingParetoLabel(int arr, int walk, size_t trips = 0)
             : arrivalTime(arr), walkingDistance(walk), numberOfTrips(trips) {}
         WalkingParetoLabel(const MCLabel& label)
-            : arrivalTime(label.arrivalTime), walkingDistance(label.walkingDistance), numberOfTrips(0) {}
+            : arrivalTime(label.arrivalTime), walkingDistance(label.walkingDistance), numberOfTrips(label.numberOfTrips) {}
     };
 
 public:
@@ -283,7 +305,7 @@ private:
             for (const Vertex stop : initialTransfers->getForwardPOIs()) {
                 const int dist = initialTransfers->getForwardDistance(stop);
                 if (dist != INFTY) {
-                    MCLabel label(departureTime + dist, dist, Vertex(source), 0, departureTime, -1);
+                    MCLabel label(departureTime + dist, dist, 0, Vertex(source), 0, departureTime, -1);
                     addLabel(stop, label);
                 }
             }
@@ -292,13 +314,13 @@ private:
             if (target != noVertex) {
                 const int dist = initialTransfers->getDistance();
                 if (dist != INFTY) {
-                    MCLabel label(departureTime + dist, dist, Vertex(source), 0, departureTime, -1);
+                    MCLabel label(departureTime + dist, dist, 0, Vertex(source), 0, departureTime, -1);
                     addLabel(target, label);
                 }
             }
         } else {
             // Simple source initialization
-            MCLabel sourceLabel(departureTime, 0, noVertex, -1, departureTime, -1);
+            MCLabel sourceLabel(departureTime, 0, 0, noVertex, -1, departureTime, -1);
             addLabel(source, sourceLabel);
         }
     }
@@ -355,18 +377,17 @@ private:
                 }
             }
 
-            // Check if this label was superseded (dominated and removed from bag)
-            // A label is stale if the bag no longer contains it
-            bool labelStillValid = false;
+            // Check if this label is now strictly dominated by another label in the bag
+            // (which may have been added since we enqueued this label)
+            bool isStrictlyDominated = false;
             for (const MCLabel& l : nodeBags[u].labels) {
-                if (l.arrivalTime == curLabel.arrivalTime &&
-                    l.walkingDistance == curLabel.walkingDistance) {
-                    labelStillValid = true;
+                if (l.strictlyDominates(curLabel)) {
+                    isStrictlyDominated = true;
                     break;
                 }
             }
-            if (!labelStillValid) {
-                continue; // Label was dominated and removed, skip it
+            if (isStrictlyDominated) {
+                continue; // Label is stale
             }
 
             // CoreCH Backward (target shortcut)
@@ -376,6 +397,7 @@ private:
                     MCLabel targetLabel(
                         t + backwardDist,
                         curLabel.walkingDistance + backwardDist,
+                        curLabel.numberOfTrips,
                         u,
                         findLabelIndex(u, curLabel),
                         t,
@@ -395,49 +417,30 @@ private:
 
                     const DiscreteTrip* begin = graph.getTripsBegin(atf);
                     const DiscreteTrip* end = graph.getTripsEnd(atf);
-                    const int* suffixBase = graph.getSuffixMinBegin(atf);
-
-                    // Get minimum transfer time at destination for buffer consideration
-                    const int bufferAtV = (v < numberOfStops) ? graph.getMinTransferTimeAt(v) : 0;
 
                     auto it = std::lower_bound(begin, end, t,
                         [](const DiscreteTrip& trip, int time) { return trip.departureTime < time; });
 
-                    // Track best local Pareto front for this edge (for dominance-based pruning)
-                    // We track the best arrival time seen so far for the current walking distance
-                    int bestLocalArrival = never;
+                    // Time window: heuristics removed for exact correctness
+                    // constexpr int TIME_WINDOW = 7200; 
+                    // const int maxDeparture = t + TIME_WINDOW;
 
                     for (; it != end; ++it) {
-                        const size_t idx = std::distance(begin, it);
-                        const int minPossibleArrival = suffixBase[idx];
-
-                        // Multi-criteria dominance pruning (replaces single-criteria break)
-                        // If the best possible arrival from remaining trips cannot improve
-                        // on what we've already found locally, we can stop
-                        if (bestLocalArrival != never) {
-                            // Check if remaining trips are dominated by local best
-                            // Since walking distance is constant (curLabel.walkingDistance),
-                            // we only need to check arrival time with buffer
-                            if (minPossibleArrival > bestLocalArrival + bufferAtV) {
-                                profiler.countMetric(METRIC_PRUNED_LABELS);
-                                break;
-                            }
-                        }
-
+                        const size_t tripIncrement = (curLabel.tripId == it->tripId) ? 0 : 1;
+                        const size_t newTrips = curLabel.numberOfTrips + tripIncrement;
+                        
+                        
                         if constexpr (TARGET_PRUNING) {
                             if (targetVertex != noVertex) {
                                 // Check if any path through this trip could be non-dominated at target
-                                MCLabel potentialLabel(minPossibleArrival, curLabel.walkingDistance);
+                                MCLabel potentialLabel(it->arrivalTime, curLabel.walkingDistance, newTrips);
                                 if (nodeBags[targetVertex].dominates(potentialLabel)) {
                                     profiler.countMetric(METRIC_PRUNED_LABELS);
-                                    break;
+                                    // Can't break here because later trips might have different tripId
+                                    // with fewer trips count
+                                    continue;
                                 }
                             }
-                        }
-
-                        // Update best local arrival
-                        if (it->arrivalTime < bestLocalArrival) {
-                            bestLocalArrival = it->arrivalTime;
                         }
 
                         // Scan this trip
@@ -455,6 +458,7 @@ private:
                     MCLabel walkLabel(
                         walkArrival,
                         curLabel.walkingDistance + walkTime,
+                        curLabel.numberOfTrips,
                         u,
                         findLabelIndex(u, curLabel),
                         t,
@@ -474,23 +478,31 @@ private:
 
         uint32_t currentAbsIndex = graph.getTripOffset(tripId) + startStopIndex;
         uint32_t endAbsIndex = graph.getTripOffset(tripId + 1);
+        
+        const size_t tripIncrement = (boardLabel.tripId == tripId) ? 0 : 1;
+        const int walkDist = boardLabel.walkingDistance;
+        const size_t newTrips = boardLabel.numberOfTrips + tripIncrement;
 
         for (uint32_t idx = currentAbsIndex; idx < endAbsIndex; ++idx) {
             profiler.countMetric(METRIC_RELAXES_TRANSIT);
 
-            // Target pruning
+            // Vehicle label pruning: if we've already scanned this stop event
+            // with a dominating (walk, trips) tuple, skip
+            VehicleLabel& vLabel = globalVehicleLabels[idx];
+            if (!vLabel.update(walkDist, newTrips, timeStamp)) {
+                return; // Dominated by previous scan, stop here
+            }
+            
             if constexpr (TARGET_PRUNING) {
                 if (targetVertex != noVertex) {
-                    MCLabel potentialLabel(currentArrivalTime, boardLabel.walkingDistance);
+                    // Check if any path through this trip could be non-dominated at target
+                    MCLabel potentialLabel(currentArrivalTime, walkDist, newTrips);
                     if (nodeBags[targetVertex].dominates(potentialLabel)) {
-                        return;
+                        profiler.countMetric(METRIC_PRUNED_LABELS);
+                        continue;
                     }
                 }
             }
-
-            // NOTE: In multi-criteria search, we cannot use single vehicle label dominance
-            // because different scans may have different walking distances.
-            // The addLabel function will handle dominance checking at the stop level.
 
             const auto& currentLeg = graph.getTripLeg(idx);
             Vertex currentStopVertex = currentLeg.stopId;
@@ -498,7 +510,8 @@ private:
             // Create label for alighting at this stop
             MCLabel alightLabel(
                 currentArrivalTime,
-                boardLabel.walkingDistance,
+                walkDist,
+                newTrips,
                 boardStop,
                 findLabelIndex(boardStop, boardLabel),
                 departureTime,
@@ -518,7 +531,8 @@ private:
         const LabelBag& bag = nodeBags[v];
         for (size_t i = 0; i < bag.size(); ++i) {
             if (bag[i].arrivalTime == label.arrivalTime &&
-                bag[i].walkingDistance == label.walkingDistance) {
+                bag[i].walkingDistance == label.walkingDistance &&
+                bag[i].numberOfTrips == label.numberOfTrips) {
                 return i;
             }
         }
@@ -530,7 +544,6 @@ private:
     const size_t numberOfStops;
 
     std::vector<LabelBag> nodeBags;
-    std::vector<VehicleLabel> globalVehicleLabels;
 
     std::vector<HeapLabel> heapLabels;
     size_t heapLabelCount;
@@ -547,6 +560,8 @@ private:
     Vertex targetVertex;
     Vertex sourceVertex;
     int sourceDepartureTime;
+
+    std::vector<VehicleLabel> globalVehicleLabels;
 
     Profiler profiler;
 };

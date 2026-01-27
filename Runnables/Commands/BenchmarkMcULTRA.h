@@ -52,6 +52,44 @@ public:
         // Load Intermediate data and build TDGraph
         Intermediate::Data inter = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
         inter.printInfo();
+        
+        // Verify transfer graph consistency
+        std::cout << "\n=== Transfer Graph Comparison ===" << std::endl;
+        std::cout << "RAPTOR transferGraph edges: " << raptorData.transferGraph.numEdges() << std::endl;
+        std::cout << "Intermediate transferGraph edges: " << inter.transferGraph.numEdges() << std::endl;
+        
+        // Sample a few edges to compare
+        size_t edgeMismatches = 0;
+        for (Vertex u : raptorData.transferGraph.vertices()) {
+            if (u >= 10) break; // Just check first few vertices
+            for (Edge e : raptorData.transferGraph.edgesFrom(u)) {
+                Vertex v = raptorData.transferGraph.get(ToVertex, e);
+                int raptorTime = raptorData.transferGraph.get(TravelTime, e);
+                
+                // Find corresponding edge in inter
+                bool found = false;
+                for (Edge ie : inter.transferGraph.edgesFrom(u)) {
+                    if (inter.transferGraph.get(ToVertex, ie) == v) {
+                        int interTime = inter.transferGraph.get(TravelTime, ie);
+                        if (raptorTime != interTime) {
+                            std::cout << "  Edge " << u << "->" << v << ": RAPTOR=" << raptorTime 
+                                      << ", Inter=" << interTime << std::endl;
+                            edgeMismatches++;
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found && u < inter.transferGraph.numVertices()) {
+                    std::cout << "  Edge " << u << "->" << v << " missing in Intermediate" << std::endl;
+                    edgeMismatches++;
+                }
+            }
+        }
+        if (edgeMismatches == 0) {
+            std::cout << "Transfer graphs appear consistent (sampled first 10 vertices)" << std::endl;
+        }
+        
         TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(inter);
 
         auto tdBuildEnd = std::chrono::high_resolution_clock::now();
@@ -207,6 +245,7 @@ public:
         // Additional 2-criteria comparison (ignoring trips)
         std::cout << "\n=== 2-Criteria Comparison (arrival + walking only) ===" << std::endl;
         size_t queries2CMatch = 0;
+        size_t totalMissingInTDD = 0, totalExtraInTDD = 0;
         for (size_t i = 0; i < queries.size(); ++i) {
             std::set<std::pair<int,int>> mcrPairs, mctddPairs;
             for (const auto& r : mcrResults[i]) {
@@ -217,10 +256,36 @@ public:
             }
             if (mcrPairs == mctddPairs) {
                 queries2CMatch++;
+            } else if (i < 5) {
+                // Show details for first few mismatching queries
+                std::cout << "\n  Query " << i << " 2-criteria mismatch:" << std::endl;
+                std::cout << "  Source: " << queries[i].source << ", Target: " << queries[i].target
+                          << ", Dep: " << queries[i].departureTime << std::endl;
+                
+                // Find pairs in MCR but not MC-TDD
+                std::cout << "  (arr,walk) in MCR but NOT in MC-TDD:" << std::endl;
+                int count = 0;
+                for (const auto& p : mcrPairs) {
+                    if (mctddPairs.find(p) == mctddPairs.end() && count++ < 5) {
+                        std::cout << "    MISSING: arr=" << p.first << ", walk=" << p.second << std::endl;
+                        totalMissingInTDD++;
+                    }
+                }
+                
+                // Find pairs in MC-TDD but not MCR
+                std::cout << "  (arr,walk) in MC-TDD but NOT in MCR:" << std::endl;
+                count = 0;
+                for (const auto& p : mctddPairs) {
+                    if (mcrPairs.find(p) == mcrPairs.end() && count++ < 5) {
+                        std::cout << "    EXTRA: arr=" << p.first << ", walk=" << p.second << std::endl;
+                        totalExtraInTDD++;
+                    }
+                }
             }
         }
-        std::cout << "Queries with matching (arrival, walk) pairs: " << queries2CMatch << "/" << queries.size() << std::endl;
-
+        std::cout << "\nQueries with matching (arrival, walk) pairs: " << queries2CMatch << "/" << queries.size() << std::endl;
+        std::cout << "Total missing (arr,walk) in MC-TDD: " << totalMissingInTDD << std::endl;
+        std::cout << "Total extra (arr,walk) in MC-TDD: " << totalExtraInTDD << std::endl;
         // Summary
         std::cout << "\n=== Summary ===" << std::endl;
         std::cout << std::fixed << std::setprecision(2);
