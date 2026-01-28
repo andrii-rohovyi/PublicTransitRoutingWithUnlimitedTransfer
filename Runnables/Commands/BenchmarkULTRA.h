@@ -61,69 +61,98 @@ public:
         std::cout << "         LOADING DATA" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
+        Timer loadTimer;
+        double raptorLoadTime = 0.0;
+        double csaLoadTime = 0.0;
+        double intermediateLoadTime = 0.0;
+        double coreCHLoadTime = 0.0;
+        double fullCHLoadTime = 0.0;
+
+        double tdGraphBuildTime = 0.0;
+        double tdGraphClassicBuildTime = 0.0;
+        double tdGraphFCBuildTime = 0.0;
+        double tdGraphCSTBuildTime = 0.0;
+        double tdGraphBSTBuildTime = 0.0;
+
+        double bucketClassicBuildTime = 0.0;
+        double bucketJTSBuildTime = 0.0;
+        double bucketFCBuildTime = 0.0;
+        double bucketCSTBuildTime = 0.0;
+        double bucketBSTBuildTime = 0.0;
+
         // Load RAPTOR data
         std::cout << "Loading RAPTOR data..." << std::endl;
+        loadTimer.restart();
         RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
         raptorData.useImplicitDepartureBufferTimes();
         raptorData.printInfo();
+        raptorLoadTime = loadTimer.elapsedMilliseconds();
 
         // Load CSA data
         std::cout << "\nLoading CSA data..." << std::endl;
+        loadTimer.restart();
         CSA::Data csaData = CSA::Data::FromBinary(getParameter("CSA input file"));
         csaData.sortConnectionsAscending();
         csaData.printInfo();
+        csaLoadTime = loadTimer.elapsedMilliseconds();
 
         // Load Intermediate data and build TD graphs
         std::cout << "\nLoading Intermediate data..." << std::endl;
+        loadTimer.restart();
         Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
         std::cout << "Intermediate data: " << intermediateData.numberOfStops() << " stops, "
                   << intermediateData.numberOfTrips() << " trips" << std::endl;
+        intermediateLoadTime = loadTimer.elapsedMilliseconds();
 
         // Build all graph variants
         std::cout << "\nBuilding TimeDependentGraph (JTS)..." << std::endl;
         Timer buildTimer;
         TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(intermediateData);
-        double tdGraphBuildTime = buildTimer.elapsedMilliseconds();
+        tdGraphBuildTime = buildTimer.elapsedMilliseconds();
         std::cout << "TD graph created: " << tdGraph.numVertices() << " vertices, "
                   << tdGraph.numEdges() << " edges in " << String::msToString(tdGraphBuildTime) << std::endl;
 
         std::cout << "\nBuilding TimeDependentGraphClassic (TD-Dijkstra Classic)..." << std::endl;
         buildTimer.restart();
         TimeDependentGraphClassic tdGraphClassic = TimeDependentGraphClassic::FromIntermediate(intermediateData);
-        double tdGraphClassicBuildTime = buildTimer.elapsedMilliseconds();
+        tdGraphClassicBuildTime = buildTimer.elapsedMilliseconds();
         std::cout << "TD Classic graph created: " << tdGraphClassic.numVertices() << " vertices, "
                   << tdGraphClassic.numEdges() << " edges in " << String::msToString(tdGraphClassicBuildTime) << std::endl;
 
         std::cout << "\nBuilding TimeDependentGraphFC (TTN-FC)..." << std::endl;
         buildTimer.restart();
         TimeDependentGraphFC tdGraphFC = TimeDependentGraphFC::FromIntermediate(intermediateData);
-        double tdGraphFCBuildTime = buildTimer.elapsedMilliseconds();
+        tdGraphFCBuildTime = buildTimer.elapsedMilliseconds();
         std::cout << "TD FC graph created: " << tdGraphFC.numVertices() << " vertices, "
                   << tdGraphFC.numEdges() << " edges in " << String::msToString(tdGraphFCBuildTime) << std::endl;
 
         std::cout << "\nBuilding TimeDependentGraphCST (TTN-CST)..." << std::endl;
         buildTimer.restart();
         TimeDependentGraphCST tdGraphCST = TimeDependentGraphCST::FromIntermediate(intermediateData);
-        double tdGraphCSTBuildTime = buildTimer.elapsedMilliseconds();
+        tdGraphCSTBuildTime = buildTimer.elapsedMilliseconds();
         std::cout << "TD CST graph created: " << tdGraphCST.numVertices() << " vertices, "
                   << tdGraphCST.numEdges() << " edges in " << String::msToString(tdGraphCSTBuildTime) << std::endl;
 
         std::cout << "\nBuilding TimeDependentGraphBST (TTN-BST)..." << std::endl;
         buildTimer.restart();
         TimeDependentGraphBST tdGraphBST = TimeDependentGraphBST::FromIntermediate(intermediateData);
-        double tdGraphBSTBuildTime = buildTimer.elapsedMilliseconds();
+        tdGraphBSTBuildTime = buildTimer.elapsedMilliseconds();
         std::cout << "TD BST graph created: " << tdGraphBST.numVertices() << " vertices, "
                   << tdGraphBST.numEdges() << " edges in " << String::msToString(tdGraphBSTBuildTime) << std::endl;
 
         // Load Core-CH
         std::cout << "\nLoading Core-CH..." << std::endl;
+        loadTimer.restart();
         CH::CH coreCH(getParameter("Core CH input file"));
         std::cout << "Core-CH loaded: " << coreCH.numVertices() << " vertices" << std::endl;
+        coreCHLoadTime = loadTimer.elapsedMilliseconds();
 
         // Load Full CH (for Bucket-CH)
         std::cout << "\nLoading Full CH (for Bucket-CH)..." << std::endl;
+        loadTimer.restart();
         CH::CH fullCH(getParameter("Full CH input file"));
         std::cout << "Full CH loaded: " << fullCH.numVertices() << " vertices" << std::endl;
+        fullCHLoadTime = loadTimer.elapsedMilliseconds();
 
         // ==================== GENERATE QUERIES ====================
         const size_t n = getParameter<size_t>("Number of queries");
@@ -209,7 +238,7 @@ public:
         Timer bucketClassicBuildTimer;
         using TDClassicBucketCH = TimeDependentDijkstraStatefulClassicBucketCH<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDClassicBucketCH algorithm_td_classic_bucketch(tdGraphClassic, raptorData.numberOfStops(), &fullCH);
-        double bucketClassicBuildTime = bucketClassicBuildTimer.elapsedMilliseconds();
+        bucketClassicBuildTime = bucketClassicBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketClassicBuildTime) << std::endl;
 
         Timer tdClassicBucketCHTimer;
@@ -255,7 +284,7 @@ public:
         Timer bucketJTSBuildTimer;
         using JTSBucketCH = TimeDependentDijkstraStatefulBucketCH<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         JTSBucketCH algorithm_jts_bucketch(tdGraph, raptorData.numberOfStops(), &fullCH);
-        double bucketJTSBuildTime = bucketJTSBuildTimer.elapsedMilliseconds();
+        bucketJTSBuildTime = bucketJTSBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketJTSBuildTime) << std::endl;
 
         Timer jtsBucketCHTimer;
@@ -301,7 +330,7 @@ public:
         Timer bucketFCBuildTimer;
         using FCBucketCH = TimeDependentDijkstraStatefulFCBucketCH<TimeDependentGraphFC, TDD::AggregateProfiler, false, true>;
         FCBucketCH algorithm_fc_bucketch(tdGraphFC, raptorData.numberOfStops(), &fullCH);
-        double bucketFCBuildTime = bucketFCBuildTimer.elapsedMilliseconds();
+        bucketFCBuildTime = bucketFCBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketFCBuildTime) << std::endl;
 
         Timer fcBucketCHTimer;
@@ -347,7 +376,7 @@ public:
         Timer bucketCSTBuildTimer;
         using CSTBucketCH = TimeDependentDijkstraStatefulCSTBucketCH<TimeDependentGraphCST, TDD::AggregateProfiler, false, true>;
         CSTBucketCH algorithm_cst_bucketch(tdGraphCST, raptorData.numberOfStops(), &fullCH);
-        double bucketCSTBuildTime = bucketCSTBuildTimer.elapsedMilliseconds();
+        bucketCSTBuildTime = bucketCSTBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketCSTBuildTime) << std::endl;
 
         Timer cstBucketCHTimer;
@@ -393,7 +422,7 @@ public:
         Timer bucketBSTBuildTimer;
         using BSTBucketCH = TimeDependentDijkstraStatefulBSTBucketCH<TimeDependentGraphBST, TDD::AggregateProfiler, false, true>;
         BSTBucketCH algorithm_bst_bucketch(tdGraphBST, raptorData.numberOfStops(), &fullCH);
-        double bucketBSTBuildTime = bucketBSTBuildTimer.elapsedMilliseconds();
+        bucketBSTBuildTime = bucketBSTBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketBSTBuildTime) << std::endl;
 
         Timer bstBucketCHTimer;
@@ -428,6 +457,34 @@ public:
         double ultraCSATime = ultraCSATimer.elapsedMilliseconds();
         std::cout << std::endl;
         std::cout << "Total time: " << String::msToString(ultraCSATime) << " (" << (ultraCSATime / n) << " ms/query)" << std::endl;
+
+        // ==================== PREPROCESSING SUMMARY ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "       PREPROCESSING TIMES" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        const double totalPreprocessingTime =
+            raptorLoadTime + csaLoadTime + intermediateLoadTime +
+            tdGraphBuildTime + tdGraphClassicBuildTime + tdGraphFCBuildTime + tdGraphCSTBuildTime + tdGraphBSTBuildTime +
+            coreCHLoadTime + fullCHLoadTime +
+            bucketClassicBuildTime + bucketJTSBuildTime + bucketFCBuildTime + bucketCSTBuildTime + bucketBSTBuildTime;
+
+        std::cout << "RAPTOR load:                 " << String::msToString(raptorLoadTime) << std::endl;
+        std::cout << "CSA load:                    " << String::msToString(csaLoadTime) << std::endl;
+        std::cout << "Intermediate load:           " << String::msToString(intermediateLoadTime) << std::endl;
+        std::cout << "TD Graph (JTS):              " << String::msToString(tdGraphBuildTime) << std::endl;
+        std::cout << "TD Graph (Classic):          " << String::msToString(tdGraphClassicBuildTime) << std::endl;
+        std::cout << "TD Graph (FC):               " << String::msToString(tdGraphFCBuildTime) << std::endl;
+        std::cout << "TD Graph (CST):              " << String::msToString(tdGraphCSTBuildTime) << std::endl;
+        std::cout << "TD Graph (BST):              " << String::msToString(tdGraphBSTBuildTime) << std::endl;
+        std::cout << "Core-CH load:                " << String::msToString(coreCHLoadTime) << std::endl;
+        std::cout << "Full CH load:                " << String::msToString(fullCHLoadTime) << std::endl;
+        std::cout << "Bucket-CH (Classic):         " << String::msToString(bucketClassicBuildTime) << std::endl;
+        std::cout << "Bucket-CH (JTS):             " << String::msToString(bucketJTSBuildTime) << std::endl;
+        std::cout << "Bucket-CH (FC):              " << String::msToString(bucketFCBuildTime) << std::endl;
+        std::cout << "Bucket-CH (CST):             " << String::msToString(bucketCSTBuildTime) << std::endl;
+        std::cout << "Bucket-CH (BST):             " << String::msToString(bucketBSTBuildTime) << std::endl;
+        std::cout << "Total preprocessing time:    " << String::msToString(totalPreprocessingTime) << std::endl;
 
         // ==================== CORRECTNESS COMPARISON ====================
         std::cout << "\n========================================" << std::endl;
