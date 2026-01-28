@@ -27,7 +27,7 @@ function(add_runnable name)
     target_link_options(${name} PRIVATE -rdynamic)
 endfunction()
 
-set(RUNNABLES DelayExperiments Network ULTRA ULTRAPHAST)
+set(RUNNABLES DelayExperiments Network ULTRA ULTRAPHAST NonFifoCheck)
 foreach(f ${RUNNABLES})
     add_runnable(${f} Runnables/${f}.cpp)
 endforeach()
