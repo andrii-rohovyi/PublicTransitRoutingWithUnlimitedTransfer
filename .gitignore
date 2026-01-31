@@ -8,6 +8,7 @@ cmake-build-debug-wsl/
 cmake-build-release/
 cmake-build-release-wsl/
 Networks/
+Networks.zip
 Runnables/DelayExperiments
 Runnables/Network
 Runnables/readcache
