@@ -877,6 +877,29 @@ private:
  *   #include "../../DataStructures/CSA/Data.h"
  */
 
+/**
+ * MeasureDelayULTRACSAQueryPerformance
+ *
+ * Compares Delay-ULTRA-CSA vs Delay-ULTRA-TB vs MR on one-to-one queries,
+ * using the SAME delay-tolerant shortcuts for both CSA and TB.
+ *
+ * The TB shortcuts are stop-event-indexed (fromStopEvent -> toStopEvent).
+ * CSA needs stop-indexed transfers (fromStop -> toStop).
+ * We convert by mapping each stop event to its stop and keeping
+ * the minimum travel time per (fromStop, toStop) pair.
+ *
+ * IMPORTANT: The RAPTOR data inside queryData.tripData has IMPLICIT
+ * departure buffer times (departureTime already reduced by minTransferTime).
+ * Since CSA's connectionIsReachableFromStop() explicitly subtracts
+ * minTransferTime, we must RESTORE the original departure times when
+ * building connections to avoid double-counting the buffer.
+ *
+ * Required includes at the top of DelayExperiments.h:
+ *
+ *   #include "../../Algorithms/CSA/DelayULTRACSA.h"
+ *   #include "../../DataStructures/CSA/Data.h"
+ */
+
 class MeasureDelayULTRACSAQueryPerformance : public ParameterizedCommand {
 
 public:
@@ -900,24 +923,6 @@ public:
         RAPTOR::Data dijkstraRaptorData(getParameter("Dijkstra RAPTOR data"));
         dijkstraRaptorData.useImplicitDepartureBufferTimes();
         dijkstraRaptorData.printInfo();
-
-        // Extract stop-to-stop walking edges from the full transfer graph
-        // BEFORE we move it away for MR. Used for diagnostics and control test.
-        std::map<std::pair<int,int>, int> walkingEdges;
-        for (StopId from(0); from < dijkstraRaptorData.numberOfStops(); from++) {
-            for (const Edge edge : dijkstraRaptorData.transferGraph.edgesFrom(Vertex(from))) {
-                const Vertex to = dijkstraRaptorData.transferGraph.get(ToVertex, edge);
-                if (to >= dijkstraRaptorData.numberOfStops()) continue;
-                if (Vertex(from) == to) continue;
-                const int tt = dijkstraRaptorData.transferGraph.get(TravelTime, edge);
-                auto key = std::make_pair(int(from), int(to));
-                if (walkingEdges.find(key) == walkingEdges.end() || walkingEdges[key] > tt) {
-                    walkingEdges[key] = tt;
-                }
-            }
-        }
-        std::cout << "  Stop-to-stop walking edges in original graph: "
-                  << walkingEdges.size() << std::endl;
 
         TripBased::DelayData delayData(getParameter("Trip-Based data"));
         delayData.printInfo();
@@ -947,183 +952,14 @@ public:
             ultraTripBased(queryData.tripData, bucketCH);
 
         // -- 5. Build CSA::Data from delayed RAPTOR + converted shortcuts -
-        const RAPTOR::Data& csaRaptorSource = queryData.tripData.raptorData;
-        std::cout << "\nRAPTOR data used for CSA connection building:" << std::endl;
-        std::cout << "  hasImplicitBufferTimes: "
-                  << csaRaptorSource.hasImplicitBufferTimes() << std::endl;
-        std::cout << "  numberOfRoutes: " << csaRaptorSource.numberOfRoutes() << std::endl;
-        std::cout << "  numberOfStops: " << csaRaptorSource.numberOfStops() << std::endl;
-        // Show first trip's first few stop events
-        if (csaRaptorSource.numberOfRoutes() > 0) {
-            const RouteId r(0);
-            const StopId* stops = csaRaptorSource.stopArrayOfRoute(r);
-            const size_t nStops = csaRaptorSource.numberOfStopsInRoute(r);
-            const RAPTOR::StopEvent* events = csaRaptorSource.firstTripOfRoute(r);
-            std::cout << "  Route 0 first trip, first 3 events:" << std::endl;
-            for (size_t i = 0; i < std::min(nStops, size_t(3)); i++) {
-                std::cout << "    stop=" << stops[i]
-                          << " dep=" << events[i].departureTime
-                          << " arr=" << events[i].arrivalTime
-                          << " minTransfer=" << csaRaptorSource.stopData[stops[i]].minTransferTime
-                          << std::endl;
-            }
-        }
-
         CSA::Data csaData = buildCSAData(
-            csaRaptorSource, queryData.tripData);
-
-        std::cout << "\nCSA data (delayed, with converted TB shortcuts):" << std::endl;
+            queryData.tripData.raptorData, queryData.tripData);
         csaData.printInfo();
 
-        // Diagnostic: show first few connections and some stats
-        std::cout << "\n  First 5 connections:" << std::endl;
-        for (size_t i = 0; i < std::min(size_t(5), csaData.connections.size()); i++) {
-            const auto& c = csaData.connections[i];
-            std::cout << "    [" << i << "] stop " << c.departureStopId
-                      << " -> " << c.arrivalStopId
-                      << "  dep=" << String::secToTime(c.departureTime)
-                      << " (" << c.departureTime << ")"
-                      << "  arr=" << String::secToTime(c.arrivalTime)
-                      << " (" << c.arrivalTime << ")"
-                      << "  trip=" << c.tripId << std::endl;
-        }
-        // Check if any connections have negative travel time
-        size_t negativeConnections = 0;
-        for (const auto& c : csaData.connections) {
-            if (c.arrivalTime < c.departureTime) negativeConnections++;
-        }
-        std::cout << "  Connections with negative travel time: "
-                  << negativeConnections << std::endl;
-
-        // Verify connections are sorted by departure time
-        {
-            size_t sortErrors = 0;
-            int lastDep = -1;
-            for (size_t ci = 0; ci < csaData.connections.size(); ci++) {
-                const int dep = csaData.connections[ci].departureTime;
-                if (dep < lastDep) {
-                    sortErrors++;
-                    if (sortErrors <= 3) {
-                        std::cout << "  SORT ERROR at [" << ci << "]: dep="
-                                  << dep << " < prev=" << lastDep << std::endl;
-                    }
-                }
-                lastDep = dep;
-            }
-            std::cout << "  Connection sort errors: " << sortErrors << std::endl;
-            if (csaData.connections.size() > 0) {
-                std::cout << "  First conn dep: "
-                          << csaData.connections.front().departureTime << " ("
-                          << String::secToTime(csaData.connections.front().departureTime)
-                          << ")" << std::endl;
-                std::cout << "  Last conn dep:  "
-                          << csaData.connections.back().departureTime << " ("
-                          << String::secToTime(csaData.connections.back().departureTime)
-                          << ")" << std::endl;
-                // Sample around where dep=51748 would land
-                size_t midIdx = csaData.connections.size() / 2;
-                std::cout << "  Mid conn [" << midIdx << "] dep: "
-                          << csaData.connections[midIdx].departureTime << " ("
-                          << String::secToTime(csaData.connections[midIdx].departureTime)
-                          << ")" << std::endl;
-            }
-        }
-
-        // Show shortcut edge stats
-        int minShortcut = INFTY, maxShortcut = 0;
-        long long totalShortcut = 0;
-        for (const Vertex v : csaData.transferGraph.vertices()) {
-            for (const Edge e : csaData.transferGraph.edgesFrom(v)) {
-                const int tt = csaData.transferGraph.get(TravelTime, e);
-                minShortcut = std::min(minShortcut, tt);
-                maxShortcut = std::max(maxShortcut, tt);
-                totalShortcut += tt;
-            }
-        }
-        if (csaData.transferGraph.numEdges() > 0) {
-            std::cout << "  Shortcut travel times: min="
-                      << minShortcut << "s max=" << maxShortcut
-                      << "s avg=" << (totalShortcut / csaData.transferGraph.numEdges())
-                      << "s" << std::endl;
-        }
-
-        // Diagnostic: how many walking edges are covered by shortcuts?
-        size_t covered = 0, missing = 0, shortcutOnly = 0;
-        size_t ttMatch = 0, ttMismatch = 0;
-        double totalWalkTT = 0, totalShortcutTT = 0;
-        std::vector<std::pair<int,int>> mismatchSamples; // (walkTT, shortcutTT)
-        for (const auto& [key, walkTT] : walkingEdges) {
-            bool found = false;
-            const Vertex from(key.first);
-            for (const Edge edge : csaData.transferGraph.edgesFrom(from)) {
-                if (static_cast<int>(csaData.transferGraph.get(ToVertex, edge)) == key.second) {
-                    found = true;
-                    const int scTT = csaData.transferGraph.get(TravelTime, edge);
-                    if (scTT == walkTT) {
-                        ttMatch++;
-                    } else {
-                        ttMismatch++;
-                        totalWalkTT += walkTT;
-                        totalShortcutTT += scTT;
-                        if (mismatchSamples.size() < 10) {
-                            mismatchSamples.emplace_back(walkTT, scTT);
-                        }
-                    }
-                    break;
-                }
-            }
-            if (found) covered++;
-            else missing++;
-        }
-        for (const Vertex v : csaData.transferGraph.vertices()) {
-            for (const Edge edge : csaData.transferGraph.edgesFrom(v)) {
-                const int to = static_cast<int>(csaData.transferGraph.get(ToVertex, edge));
-                auto key = std::make_pair(int(v), to);
-                if (walkingEdges.find(key) == walkingEdges.end()) shortcutOnly++;
-            }
-        }
-        std::cout << "\n  Walking edge coverage by TB shortcuts:" << std::endl;
-        std::cout << "    Walking edges (stop-to-stop): " << walkingEdges.size() << std::endl;
-        std::cout << "    Covered by shortcuts: " << covered << std::endl;
-        std::cout << "    MISSING from shortcuts: " << missing << std::endl;
-        std::cout << "    Shortcut-only (no walking): " << shortcutOnly << std::endl;
-        std::cout << "    TravelTime matches: " << ttMatch << std::endl;
-        std::cout << "    TravelTime MISMATCHES: " << ttMismatch << std::endl;
-        if (ttMismatch > 0) {
-            std::cout << "    Avg walk TT (mismatched): " << (totalWalkTT / ttMismatch) << "s" << std::endl;
-            std::cout << "    Avg shortcut TT (mismatched): " << (totalShortcutTT / ttMismatch) << "s" << std::endl;
-            std::cout << "    Sample mismatches (walk vs shortcut):" << std::endl;
-            for (const auto& [w, s] : mismatchSamples) {
-                std::cout << "      walk=" << w << "s  shortcut=" << s << "s" << std::endl;
-            }
-        }
-
-        // -- 6. Delay-ULTRA-CSA query (TB shortcuts) ----------------------
+        // -- 6. Delay-ULTRA-CSA query -------------------------------------
         const std::vector<int> emptyDelayVec;
         CSA::DelayULTRACSA<false> delayCSA(
             csaData, bucketCH, emptyDelayVec, 0);
-
-        // -- 6b. CSA with WALKING EDGES as transfer graph -----------------
-        //    This is the real test: does using actual walking edges fix it?
-        CSA::Data walkingCSAData = csaData;
-        {
-            Intermediate::TransferGraph walkGraph;
-            walkGraph.addVertices(csaData.numberOfStops());
-            for (size_t i = 0; i < csaData.numberOfStops(); i++) {
-                walkGraph.set(Coordinates, Vertex(i),
-                    csaData.transferGraph.get(Coordinates, Vertex(i)));
-            }
-            for (const auto& [key, tt] : walkingEdges) {
-                const Edge e = walkGraph.findOrAddEdge(Vertex(key.first), Vertex(key.second));
-                walkGraph.set(TravelTime, e, tt);
-            }
-            walkGraph.packEdges();
-            std::cout << "\n  Walking transfer graph: " << walkGraph.numEdges()
-                      << " edges" << std::endl;
-            Graph::move(std::move(walkGraph), walkingCSAData.transferGraph);
-        }
-        CSA::DelayULTRACSA<false> walkingCSA(
-            walkingCSAData, bucketCH, emptyDelayVec, 0);
 
         // -- 7. Generate random queries -----------------------------------
         const size_t n = getParameter<size_t>("Number of queries");
@@ -1145,137 +981,14 @@ public:
             runQueries(queries, ultraTripBased);
         const double tbTime = timer.elapsedMilliseconds();
 
-        // -- 10. Run Delay-ULTRA-CSA queries -------------------------------
+        // -- 10. Run Delay-ULTRA-CSA queries ------------------------------
         std::cout << "\n--- Delay-ULTRA-CSA ---" << std::endl;
         timer.restart();
-        std::vector<std::vector<RAPTOR::ArrivalLabel>> csaResults;
-        csaResults.reserve(queries.size());
-        {
-            Progress progress(queries.size());
-            for (size_t qi = 0; qi < queries.size(); qi++) {
-                delayCSA.resetDebugCounters();
-                delayCSA.run(queries[qi].source, queries[qi].departureTime, queries[qi].target);
-                csaResults.emplace_back(delayCSA.getArrivals());
-                if (qi < 5) {
-                    std::cout << "  Query " << qi << " debug:" << std::endl;
-                    delayCSA.printDebugCounters();
-                }
-                progress++;
-            }
-        }
+        const std::vector<std::vector<RAPTOR::ArrivalLabel>> csaResults =
+            runCSAQueries(queries, delayCSA);
         const double csaTime = timer.elapsedMilliseconds();
 
-        // -- 10b. Run CSA with walking edges --------------------------------
-        std::cout << "\n--- CSA with walking edges ---" << std::endl;
-        timer.restart();
-        std::vector<std::vector<RAPTOR::ArrivalLabel>> walkResults;
-        walkResults.reserve(queries.size());
-        {
-            Progress progress(queries.size());
-            for (size_t qi = 0; qi < queries.size(); qi++) {
-                walkingCSA.resetDebugCounters();
-                walkingCSA.run(queries[qi].source, queries[qi].departureTime, queries[qi].target);
-                walkResults.emplace_back(walkingCSA.getArrivals());
-                if (qi < 5) {
-                    std::cout << "  Query " << qi << " (walking) debug:" << std::endl;
-                    walkingCSA.printDebugCounters();
-                }
-                progress++;
-            }
-        }
-        const double walkTime = timer.elapsedMilliseconds();
-
-        // -- 11. Diagnostic: compare first 5 queries in detail --------
-        std::cout << "\n=== Diagnostic: First 5 Queries ===" << std::endl;
-        for (size_t i = 0; i < std::min(n, size_t(5)); i++) {
-            const VertexQuery& q = queries[i];
-            std::cout << "  Query " << i << ": src=" << q.source
-                      << " tgt=" << q.target
-                      << " dep=" << String::secToTime(q.departureTime)
-                      << " (" << q.departureTime << "s)"
-                      << std::endl;
-
-            // MR result
-            int mrEarliest = never;
-            for (const auto& label : dijkstraResults[i]) {
-                mrEarliest = std::min(mrEarliest, label.arrivalTime);
-            }
-            std::cout << "    MR:      ";
-            if (mrEarliest < never) {
-                std::cout << String::secToTime(mrEarliest)
-                          << " (" << mrEarliest << "s)"
-                          << " travel=" << (mrEarliest - q.departureTime) << "s"
-                          << " labels=" << dijkstraResults[i].size();
-            } else {
-                std::cout << "unreachable";
-            }
-            std::cout << std::endl;
-
-            // TB result
-            int tbEarliest = never;
-            for (const auto& label : tbResults[i]) {
-                tbEarliest = std::min(tbEarliest, label.arrivalTime);
-            }
-            std::cout << "    TB:      ";
-            if (tbEarliest < never) {
-                std::cout << String::secToTime(tbEarliest)
-                          << " (" << tbEarliest << "s)"
-                          << " travel=" << (tbEarliest - q.departureTime) << "s"
-                          << " labels=" << tbResults[i].size();
-            } else {
-                std::cout << "unreachable";
-            }
-            std::cout << std::endl;
-
-            // CSA result
-            std::cout << "    CSA:     ";
-            if (!csaResults[i].empty()) {
-                const int csaArr = csaResults[i].front().arrivalTime;
-                std::cout << String::secToTime(csaArr)
-                          << " (" << csaArr << "s)"
-                          << " travel=" << (csaArr - q.departureTime) << "s";
-            } else {
-                std::cout << "unreachable";
-            }
-            std::cout << std::endl;
-
-            // Walking CSA result
-            std::cout << "    WalkCSA: ";
-            if (!walkResults[i].empty()) {
-                const int wArr = walkResults[i].front().arrivalTime;
-                std::cout << String::secToTime(wArr)
-                          << " (" << wArr << "s)"
-                          << " travel=" << (wArr - q.departureTime) << "s";
-            } else {
-                std::cout << "unreachable";
-            }
-            std::cout << std::endl;
-
-            // Check if source/target are stops
-            std::cout << "    srcIsStop=" << csaData.isStop(Vertex(q.source))
-                      << " tgtIsStop=" << csaData.isStop(Vertex(q.target))
-                      << " numStops=" << csaData.numberOfStops()
-                      << std::endl;
-
-            // Check if CSA == WalkCSA
-            const int csaArr2 = csaResults[i].empty() ? never : csaResults[i].front().arrivalTime;
-            const int walkArr2 = walkResults[i].empty() ? never : walkResults[i].front().arrivalTime;
-            if (csaArr2 == walkArr2) {
-                std::cout << "    CSA == WalkCSA (shortcuts same as walking)" << std::endl;
-            } else if (walkArr2 < csaArr2) {
-                std::cout << "    *** WalkCSA BETTER by " << (csaArr2 - walkArr2) << "s ***" << std::endl;
-            } else {
-                std::cout << "    Shortcuts better by " << (walkArr2 - csaArr2) << "s" << std::endl;
-            }
-            // Compare WalkCSA vs MR
-            if (walkArr2 <= mrEarliest) {
-                std::cout << "    WalkCSA vs MR: CORRECT" << std::endl;
-            } else if (walkArr2 < never) {
-                std::cout << "    WalkCSA vs MR: detour=" << (walkArr2 - mrEarliest) << "s" << std::endl;
-            }
-        }
-
-        // -- 12. Report timing --------------------------------------------
+        // -- 11. Report timing --------------------------------------------
         std::cout << "\n=== Timing Summary ===" << std::endl;
         std::cout << "  Total queries:         " << n << std::endl;
         std::cout << "  MR total:              "
@@ -1309,31 +1022,19 @@ public:
         std::cout << tbStats << std::endl;
 
         // -- 13. Quality: MR vs CSA (earliest-arrival comparison) ---------
-        std::cout << "=== Quality: MR vs Delay-ULTRA-CSA "
-                     "(TB shortcuts, earliest arrival) ===" << std::endl;
+        std::cout << "=== Quality: MR vs Delay-ULTRA-CSA ===" << std::endl;
         printCSAQuality(queries, dijkstraResults, csaResults);
-
-        std::cout << "\n=== Quality: MR vs Delay-ULTRA-CSA "
-                     "(walking edges, earliest arrival) ===" << std::endl;
-        printCSAQuality(queries, dijkstraResults, walkResults);
     }
 
 private:
     // =====================================================================
     //  Build CSA::Data from delayed RAPTOR data + converted TB shortcuts
     // =====================================================================
-    //
-    //  CRITICAL: The RAPTOR data has IMPLICIT departure buffer times,
-    //  meaning departureTime was already reduced by minTransferTime(stop).
-    //  CSA's connectionIsReachableFromStop() explicitly subtracts
-    //  minTransferTime, so we must ADD IT BACK to departure times here
-    //  to avoid double-counting.
-    //
     inline CSA::Data buildCSAData(
             const RAPTOR::Data& raptorData,
             const TripBased::Data& tbData) const noexcept {
 
-        // 1. Build CSA stops from RAPTOR stops (uses template constructor)
+        // 1. Build CSA stops from RAPTOR stops
         std::vector<CSA::Stop> stops;
         stops.reserve(raptorData.numberOfStops());
         for (const StopId stop : raptorData.stops()) {
@@ -1352,9 +1053,6 @@ private:
                 const RAPTOR::StopEvent* events =
                     raptorData.tripOfRoute(route, t);
                 for (size_t i = 0; i + 1 < numStops; i++) {
-                    // Restore explicit departure time:
-                    // stored departureTime = original - minTransferTime
-                    // so original = stored + minTransferTime
                     const int explicitDepartureTime =
                         events[i].departureTime +
                         raptorData.stopData[routeStops[i]].minTransferTime;
@@ -1370,42 +1068,16 @@ private:
             }
         }
 
-        // 3. Build CSA trips (minimal -- just need the count)
-        std::vector<CSA::Trip> trips(static_cast<size_t>(nextTripId));
-
-        // 3b. SORT connections by departure time (CRITICAL for CSA!)
+        // 3. Sort connections by departure time (CRITICAL for CSA!)
         std::sort(connections.begin(), connections.end(),
             [](const CSA::Connection& a, const CSA::Connection& b) {
                 return a.departureTime < b.departureTime;
             });
-        std::cout << "  Connections sorted by dep time: " << connections.size()
-                  << " (first dep=" << (connections.empty() ? 0 : connections.front().departureTime)
-                  << ", last dep=" << (connections.empty() ? 0 : connections.back().departureTime)
-                  << ")" << std::endl;
 
-        // 4. Convert TB shortcuts to stop-indexed transfer graph
-        std::cout << "  TB stopEventGraph: "
-                  << tbData.stopEventGraph.numVertices() << " vertices, "
-                  << tbData.stopEventGraph.numEdges() << " edges"
-                  << std::endl;
-        std::cout << "  TB numberOfStopEvents: "
-                  << tbData.numberOfStopEvents() << std::endl;
-        // Show a few shortcut edges before conversion
-        size_t edgesPrinted = 0;
-        for (Vertex from(0); from < tbData.stopEventGraph.numVertices() && edgesPrinted < 3; from++) {
-            for (const Edge edge : tbData.stopEventGraph.edgesFrom(from)) {
-                if (edgesPrinted >= 3) break;
-                const Vertex to = tbData.stopEventGraph.get(ToVertex, edge);
-                const int tt = tbData.stopEventGraph.get(TravelTime, edge);
-                const StopId fromStop = stopOfEvent(tbData, StopEventId(from));
-                const StopId toStop = stopOfEvent(tbData, StopEventId(to));
-                std::cout << "    SE edge: event " << from << "(stop " << fromStop
-                          << ") -> event " << to << "(stop " << toStop
-                          << ") tt=" << tt << std::endl;
-                edgesPrinted++;
-            }
-        }
+        // 4. Build CSA trips
+        std::vector<CSA::Trip> trips(static_cast<size_t>(nextTripId));
 
+        // 5. Convert TB shortcuts to stop-indexed transfer graph
         Intermediate::TransferGraph shortcutGraph =
             convertShortcutsToStopGraph(raptorData, tbData);
 
@@ -1415,8 +1087,7 @@ private:
                   << shortcutGraph.numEdges()
                   << " stop edges" << std::endl;
 
-        // 5. Build CSA::Data via FromInput (MAKE_BIDIRECTIONAL=false
-        //    because shortcuts are directional)
+        // 6. Build CSA::Data
         return CSA::Data::FromInput<false>(stops, connections, trips,
                                            std::move(shortcutGraph));
     }
@@ -1432,13 +1103,11 @@ private:
         Intermediate::TransferGraph graph;
         graph.addVertices(numStops);
 
-        // Copy coordinates
         for (size_t i = 0; i < numStops; i++) {
             graph.set(Coordinates, Vertex(i),
                 raptorData.transferGraph.get(Coordinates, Vertex(i)));
         }
 
-        // Iterate TB stopEventGraph edges and map to stops
         const auto& seg = tbData.stopEventGraph;
         for (Vertex from(0); from < seg.numVertices(); from++) {
             if (static_cast<size_t>(from) >= tbData.numberOfStopEvents()) continue;
@@ -1470,7 +1139,6 @@ private:
         return graph;
     }
 
-    // Map a stop event to its stop
     inline StopId stopOfEvent(const TripBased::Data& tbData,
                               const StopEventId event) const noexcept {
         const TripId trip = tbData.tripOfStopEvent[event];
@@ -1507,26 +1175,6 @@ private:
         for (const VertexQuery& query : queries) {
             algorithm.run(query.source, query.departureTime, query.target);
             results.emplace_back(algorithm.getArrivals());
-            progress++;
-        }
-        return results;
-    }
-
-    template<typename CSA_ALGO>
-    inline std::vector<std::vector<RAPTOR::ArrivalLabel>> runStdCSAQueries(
-            const std::vector<VertexQuery>& queries,
-            CSA_ALGO& algorithm) const noexcept {
-        Progress progress(queries.size());
-        std::vector<std::vector<RAPTOR::ArrivalLabel>> results;
-        results.reserve(queries.size());
-        for (const VertexQuery& query : queries) {
-            algorithm.run(query.source, query.departureTime, query.target);
-            std::vector<RAPTOR::ArrivalLabel> labels;
-            const int arr = algorithm.getEarliestArrivalTime(query.target);
-            if (arr < never) {
-                labels.emplace_back(arr, 1);
-            }
-            results.emplace_back(std::move(labels));
             progress++;
         }
         return results;

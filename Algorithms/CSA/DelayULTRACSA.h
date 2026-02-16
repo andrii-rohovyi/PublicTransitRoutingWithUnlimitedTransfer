@@ -101,12 +101,6 @@ public:
         }
         runInitialTransfers();
         const ConnectionId firstConnection = firstReachableConnection(departureTime);
-        dbgFirstConnIdx = size_t(firstConnection);
-        dbgTotalConns = data.connections.size();
-        if (firstConnection < ConnectionId(data.connections.size())) {
-            dbgFirstConnDep = data.connections[firstConnection].departureTime;
-        }
-        dbgTargetArrAfterInit = (targetStop != noStop) ? arrivalTime[targetStop] : never;
         profiler.donePhase(PHASE_INITIALIZATION);
 
         profiler.startPhase();
@@ -161,38 +155,6 @@ public:
         return result;
     }
 
-    inline void printDebugCounters() const noexcept {
-        std::cout << "    [DEBUG] firstConnIdx:            " << dbgFirstConnIdx << " / " << dbgTotalConns << std::endl;
-        std::cout << "    [DEBUG] firstConnDep:            " << dbgFirstConnDep << " (" << String::secToTime(dbgFirstConnDep) << ")" << std::endl;
-        std::cout << "    [DEBUG] targetArrAfterInit:      " << dbgTargetArrAfterInit << " (" << String::secToTime(dbgTargetArrAfterInit) << ")" << std::endl;
-        std::cout << "    [DEBUG] initial stops reached:   " << dbgInitStops << std::endl;
-        std::cout << "    [DEBUG] connections scanned:     " << dbgConnScanned << std::endl;
-        std::cout << "    [DEBUG] reachable from stop:     " << dbgReachFromStop << std::endl;
-        std::cout << "    [DEBUG] reachable from trip:     " << dbgReachFromTrip << std::endl;
-        std::cout << "    [DEBUG] arrivalByTrip calls:     " << dbgTripCalls << std::endl;
-        std::cout << "    [DEBUG] arrivalByTrip improved:  " << (dbgTripCalls - dbgTripSkipped) << std::endl;
-        std::cout << "    [DEBUG] transfer edges relaxed:  " << dbgEdgesRelaxed << std::endl;
-        std::cout << "    [DEBUG] transfers improved:      " << dbgTransferImproved << std::endl;
-        std::cout << "    [DEBUG] backward to target:      " << dbgBackwardTarget << std::endl;
-    }
-
-    inline void resetDebugCounters() noexcept {
-        dbgFirstConnIdx = 0;
-        dbgTotalConns = 0;
-        dbgFirstConnDep = 0;
-        dbgTargetArrAfterInit = 0;
-        dbgInitStops = 0;
-        dbgConnScanned = 0;
-        dbgReachFromStop = 0;
-        dbgReachFromTrip = 0;
-        dbgTripCalls = 0;
-        dbgTripSkipped = 0;
-        dbgEdgesRelaxed = 0;
-        dbgTransferImproved = 0;
-        dbgTransferNotImproved = 0;
-        dbgBackwardTarget = 0;
-    }
-
     inline const Profiler& getProfiler() const noexcept {
         return profiler;
     }
@@ -221,7 +183,6 @@ private:
     inline void scanConnections(const ConnectionId begin,
                                 const ConnectionId end) noexcept {
         for (ConnectionId i = begin; i < end; i++) {
-            dbgConnScanned++;
             const Connection& connection = data.connections[i];
             if (targetStop != noStop &&
                 connection.departureTime > arrivalTime[targetStop])
@@ -247,9 +208,8 @@ private:
 
     inline bool connectionIsReachable(const Connection& connection,
                                       const ConnectionId id) noexcept {
-        if (connectionIsReachableFromTrip(connection)) { dbgReachFromTrip++; return true; }
+        if (connectionIsReachableFromTrip(connection)) return true;
         if (connectionIsReachableFromStop(connection)) {
-            dbgReachFromStop++;
             if constexpr (PathRetrieval) {
                 tripReached[connection.tripId] = id;
             } else {
@@ -265,8 +225,7 @@ private:
 
     inline void arrivalByTrip(const StopId stop, const int time,
                               const TripId trip, const ConnectionId connId) noexcept {
-        dbgTripCalls++;
-        if (arrivalTime[stop] <= time) { dbgTripSkipped++; return; }
+        if (arrivalTime[stop] <= time) return;
         profiler.countMetric(METRIC_STOPS_BY_TRIP);
         arrivalTime[stop] = time;
         if constexpr (PathRetrieval) {
@@ -278,7 +237,6 @@ private:
         const StopEventId fromStopEvent = StopEventId(connId);
 
         for (const Edge edge : data.transferGraph.edgesFrom(stop)) {
-            dbgEdgesRelaxed++;
             profiler.countMetric(METRIC_EDGES);
             const StopId toStop = StopId(data.transferGraph.get(ToVertex, edge));
             const int travelTime = data.transferGraph.get(TravelTime, edge);
@@ -288,15 +246,10 @@ private:
                 if (!isShortcutValidUnderDelay(edge, fromStopEvent)) continue;
             }
 
-            const bool improved = (arrivalTime[toStop] > newArrivalTime);
-            if (improved) dbgTransferImproved++;
-            else dbgTransferNotImproved++;
-
             arrivalByTransfer(toStop, newArrivalTime, stop, edge);
         }
 
         if (initialTransfers.getBackwardDistance(stop) != INFTY) {
-            dbgBackwardTarget++;
             profiler.countMetric(METRIC_EDGES);
             const int newArrivalTime = time + initialTransfers.getBackwardDistance(stop);
             arrivalByTransfer(targetStop, newArrivalTime, stop, noEdge);
@@ -314,7 +267,6 @@ private:
             Assert(data.isStop(stop), "Reached POI " << stop << " is not a stop!");
             Assert(initialTransfers.getForwardDistance(stop) != INFTY,
                    "Vertex " << stop << " was not reached!");
-            dbgInitStops++;
             profiler.countMetric(METRIC_EDGES);
             const int newArrivalTime =
                 sourceDepartureTime + initialTransfers.getForwardDistance(stop);
@@ -359,22 +311,6 @@ private:
     std::vector<StopEventId> tripBoardingEvent;
 
     Profiler profiler;
-
-    // Debug counters
-    mutable size_t dbgFirstConnIdx{0};
-    mutable size_t dbgTotalConns{0};
-    mutable int dbgFirstConnDep{0};
-    mutable int dbgTargetArrAfterInit{0};
-    mutable size_t dbgInitStops{0};
-    mutable size_t dbgConnScanned{0};
-    mutable size_t dbgReachFromStop{0};
-    mutable size_t dbgReachFromTrip{0};
-    mutable size_t dbgTripCalls{0};
-    mutable size_t dbgTripSkipped{0};
-    mutable size_t dbgEdgesRelaxed{0};
-    mutable size_t dbgTransferImproved{0};
-    mutable size_t dbgTransferNotImproved{0};
-    mutable size_t dbgBackwardTarget{0};
 };
 
 } // namespace CSA
