@@ -79,7 +79,6 @@ int main(int argc, char** argv) {
     new CheckMCRPruning(shell);
     new CompareMRwithTDStatefulNoCH(shell);
     new CompareMRwithTDStatefulCoreCH(shell);
-    new CheckTDDijkstraPruning(shell);
     new DebugSingleQuery(shell);
     new DebugExplicitQuery(shell);
     new CompareTDGraphVariants(shell);
