@@ -19,6 +19,7 @@
 #include "../../Algorithms/Dijkstra/TD-DijkstraStateful.h"
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../DataStructures/Intermediate/Data.h"
+#include "../../Algorithms/RAPTOR/ULTRARAPTOR.h"
 
 // CSA delay support
 #include "../../DataStructures/CSA/DelayData.h"
@@ -910,9 +911,8 @@ class MeasureDelayULTRACSAQueryPerformance : public ParameterizedCommand {
 public:
     MeasureDelayULTRACSAQueryPerformance(BasicShell& shell) :
         ParameterizedCommand(shell, "measureDelayULTRACSAQueryPerformance",
-            "Measures query performance of Delay-ULTRA-CSA vs "
-            "Delay-ULTRA-TB, MR, and TD-Dijkstra, using TB delay "
-            "shortcuts converted to stop-indexed format for CSA.") {
+            "Measures query performance of Delay-ULTRA-CSA, ULTRA-RAPTOR, "
+            "ULTRA-RAPTOR-prune, ULTRA-TB, MR, and TD-Dijkstra.") {
         addParameter("Dijkstra RAPTOR data");
         addParameter("Trip-Based data");
         addParameter("Core CH data");
@@ -924,7 +924,9 @@ public:
     }
 
     virtual void execute() noexcept {
-        // -- 1. Load input data -------------------------------------------
+        // =================================================================
+        //  1. Load input data
+        // =================================================================
         RAPTOR::Data dijkstraRaptorData(getParameter("Dijkstra RAPTOR data"));
         dijkstraRaptorData.useImplicitDepartureBufferTimes();
         dijkstraRaptorData.printInfo();
@@ -935,7 +937,9 @@ public:
         CH::CH coreCH(getParameter("Core CH data"));
         const CH::CH bucketCH(getParameter("Bucket CH data"));
 
-        // -- 2. Apply delay updates ---------------------------------------
+        // =================================================================
+        //  2. Apply delay updates
+        // =================================================================
         const int startTime = String::parseSeconds(getParameter("Start time"));
         const int endTime   = String::parseSeconds(getParameter("End time"));
 
@@ -944,7 +948,22 @@ public:
         delayUpdater.applyUpdatesUntil(startTime, true);
         const TripBased::DelayQueryData& queryData = delayUpdater.getQueryData();
 
-        // -- 3. MR baseline (Dijkstra-RAPTOR) -----------------------------
+        // =================================================================
+        //  3. Convert TB shortcuts to stop-level graph (shared by CSA,
+        //     ULTRA-RAPTOR, ULTRA-RAPTOR-prune)
+        // =================================================================
+        Intermediate::TransferGraph shortcutGraph =
+            convertShortcutsToStopGraph(
+                queryData.tripData.raptorData, queryData.tripData);
+        std::cout << "  Shortcut conversion: "
+                  << queryData.tripData.stopEventGraph.numEdges()
+                  << " stop-event edges -> "
+                  << shortcutGraph.numEdges()
+                  << " stop edges" << std::endl;
+
+        // =================================================================
+        //  4. MR baseline (Dijkstra-RAPTOR with walking transfers)
+        // =================================================================
         RAPTOR::Data delayedRaptorData = queryData.tripData.raptorData;
         Graph::move(std::move(dijkstraRaptorData.transferGraph),
                     delayedRaptorData.transferGraph);
@@ -952,24 +971,48 @@ public:
                                RAPTOR::AggregateProfiler>
             dijkstraRaptor(delayedRaptorData, coreCH);
 
-        // -- 4. ULTRA-TB query --------------------------------------------
+        // =================================================================
+        //  5. ULTRA-TB query
+        // =================================================================
         TripBased::Query<TripBased::AggregateProfiler>
             ultraTripBased(queryData.tripData, bucketCH);
 
-        // -- 5. Build CSA::Data from delayed RAPTOR + converted shortcuts -
-        CSA::Data csaData = buildCSAData(
-            queryData.tripData.raptorData, queryData.tripData);
+        // =================================================================
+        //  6. CSA data + query
+        // =================================================================
+        CSA::Data csaData = buildCSADataWithShortcuts(
+            queryData.tripData.raptorData, shortcutGraph);
         csaData.printInfo();
 
-        // -- 6. Delay-ULTRA-CSA query -------------------------------------
         const std::vector<int> emptyDelayVec;
         CSA::DelayULTRACSA<false> delayCSA(
             csaData, bucketCH, emptyDelayVec, 0);
 
-        // -- 7. TD-Dijkstra on DELAYED timetable --------------------------
-        //    Build Intermediate::Data from the delayed RAPTOR data so that
-        //    the TD graph reflects the same delayed departure/arrival times
-        //    as MR, TB, and CSA.
+        // =================================================================
+        //  7. ULTRA-RAPTOR variants (shortcuts-only transfer graph)
+        // =================================================================
+        RAPTOR::Data shortcutRaptorData =
+            buildShortcutRaptorData(queryData.tripData.raptorData,
+                                    shortcutGraph);
+        std::cout << "  Shortcut RAPTOR data: "
+                  << shortcutRaptorData.transferGraph.numVertices()
+                  << " vertices, "
+                  << shortcutRaptorData.transferGraph.numEdges()
+                  << " edges" << std::endl;
+
+        // Standard ULTRA-RAPTOR
+        RAPTOR::ULTRARAPTOR<RAPTOR::AggregateProfiler>
+            ultraRaptor(shortcutRaptorData, bucketCH);
+
+        // Prune variant needs edges sorted by travel time
+        RAPTOR::Data shortcutRaptorDataPrune = shortcutRaptorData;
+        shortcutRaptorDataPrune.sortTransferGraphEdgesByTravelTime();
+        RAPTOR::ULTRARAPTOR_prune<RAPTOR::AggregateProfiler>
+            ultraRaptorPrune(shortcutRaptorDataPrune, bucketCH);
+
+        // =================================================================
+        //  8. TD-Dijkstra on delayed timetable
+        // =================================================================
         std::cout << "Building time-dependent graph from delayed timetable..."
                   << std::endl;
         Intermediate::Data delayedIntermediate =
@@ -985,34 +1028,42 @@ public:
         TDDijkstraStateful tdDijkstra(
             tdGraph, delayedRaptorData.numberOfStops(), &coreCH);
 
-        // -- 8. Generate random queries -----------------------------------
+        // =================================================================
+        //  9. Generate random queries
+        // =================================================================
         const size_t n = getParameter<size_t>("Number of queries");
         const std::vector<VertexQuery> queries =
             generateRandomVertexQueries(bucketCH.numVertices(), n,
                                         startTime, endTime);
 
-        // -- 9. Run MR queries --------------------------------------------
+        // =================================================================
+        //  10. Run all algorithms
+        // =================================================================
         std::cout << "\n--- MR (Dijkstra-RAPTOR) ---" << std::endl;
         Timer timer;
-        const std::vector<std::vector<RAPTOR::ArrivalLabel>> dijkstraResults =
-            runQueries(queries, dijkstraRaptor);
+        const auto dijkstraResults = runQueries(queries, dijkstraRaptor);
         const double mrTime = timer.elapsedMilliseconds();
 
-        // -- 10. Run ULTRA-TB queries -------------------------------------
         std::cout << "\n--- ULTRA-TB ---" << std::endl;
         timer.restart();
-        const std::vector<std::vector<RAPTOR::ArrivalLabel>> tbResults =
-            runQueries(queries, ultraTripBased);
+        const auto tbResults = runQueries(queries, ultraTripBased);
         const double tbTime = timer.elapsedMilliseconds();
 
-        // -- 11. Run Delay-ULTRA-CSA queries ------------------------------
+        std::cout << "\n--- ULTRA-RAPTOR ---" << std::endl;
+        timer.restart();
+        const auto urResults = runQueries(queries, ultraRaptor);
+        const double urTime = timer.elapsedMilliseconds();
+
+        std::cout << "\n--- ULTRA-RAPTOR (prune) ---" << std::endl;
+        timer.restart();
+        const auto urpResults = runQueries(queries, ultraRaptorPrune);
+        const double urpTime = timer.elapsedMilliseconds();
+
         std::cout << "\n--- Delay-ULTRA-CSA ---" << std::endl;
         timer.restart();
-        const std::vector<std::vector<RAPTOR::ArrivalLabel>> csaResults =
-            runCSAQueries(queries, delayCSA);
+        const auto csaResults = runCSAQueries(queries, delayCSA);
         const double csaTime = timer.elapsedMilliseconds();
 
-        // -- 12. Run TD-Dijkstra queries ----------------------------------
         std::cout << "\n--- TD-Dijkstra (stateful, CoreCH) ---" << std::endl;
         std::vector<int> tdResults;
         tdResults.reserve(n);
@@ -1020,199 +1071,70 @@ public:
         {
             Progress progress(n);
             for (size_t i = 0; i < n; ++i) {
-                const VertexQuery& query = queries[i];
-                tdDijkstra.run(query.source, query.departureTime, query.target);
-                tdResults.push_back(tdDijkstra.getArrivalTime(query.target));
+                const VertexQuery& q = queries[i];
+                tdDijkstra.run(q.source, q.departureTime, q.target);
+                tdResults.push_back(tdDijkstra.getArrivalTime(q.target));
                 progress++;
             }
         }
         const double tdTime = timer.elapsedMilliseconds();
 
-        // -- 13. Report timing --------------------------------------------
+        // =================================================================
+        //  11. Timing summary
+        // =================================================================
         std::cout << "\n=== Timing Summary ===" << std::endl;
-        std::cout << "  Total queries:         " << n << std::endl;
+        std::cout << "  Total queries:           " << n << std::endl;
         std::cout << std::fixed;
-        std::cout << "  MR total:              "
-                  << std::setprecision(1) << mrTime << " ms  ("
-                  << std::setprecision(3) << (mrTime / n) << " ms/query)"
-                  << std::endl;
-        std::cout << "  TD-Dijkstra total:     "
-                  << std::setprecision(1) << tdTime << " ms  ("
-                  << std::setprecision(3) << (tdTime / n) << " ms/query)"
-                  << std::endl;
-        std::cout << "  ULTRA-TB total:        "
-                  << std::setprecision(1) << tbTime << " ms  ("
-                  << std::setprecision(3) << (tbTime / n) << " ms/query)"
-                  << std::endl;
-        std::cout << "  Delay-ULTRA-CSA total: "
-                  << std::setprecision(1) << csaTime << " ms  ("
-                  << std::setprecision(3) << (csaTime / n) << " ms/query)"
-                  << std::endl;
+        auto printTime = [&](const char* label, double ms) {
+            std::cout << "  " << std::left << std::setw(25) << label
+                      << std::setprecision(1) << ms << " ms  ("
+                      << std::setprecision(3) << (ms / n) << " ms/query)"
+                      << std::endl;
+        };
+        printTime("MR total:", mrTime);
+        printTime("TD-Dijkstra total:", tdTime);
+        printTime("ULTRA-TB total:", tbTime);
+        printTime("ULTRA-RAPTOR total:", urTime);
+        printTime("ULTRA-RAPTOR-P total:", urpTime);
+        printTime("Delay-ULTRA-CSA total:", csaTime);
 
         std::cout << std::setprecision(2);
-        if (csaTime > 0) {
-            std::cout << "  Speedup CSA vs TB:     "
-                      << (tbTime / csaTime) << "x" << std::endl;
-            std::cout << "  Speedup CSA vs MR:     "
-                      << (mrTime / csaTime) << "x" << std::endl;
-            std::cout << "  Speedup CSA vs TD:     "
-                      << (tdTime / csaTime) << "x" << std::endl;
-        }
-        if (tdTime > 0) {
-            std::cout << "  Speedup TD vs MR:      "
-                      << (mrTime / tdTime) << "x" << std::endl;
-        }
+        auto printSpeedup = [&](const char* label, double num, double den) {
+            if (den > 0) {
+                std::cout << "  " << std::left << std::setw(25) << label
+                          << (num / den) << "x" << std::endl;
+            }
+        };
+        printSpeedup("Speedup CSA vs TB:", tbTime, csaTime);
+        printSpeedup("Speedup CSA vs MR:", mrTime, csaTime);
+        printSpeedup("Speedup CSA vs TD:", tdTime, csaTime);
+        printSpeedup("Speedup CSA vs UR:", urTime, csaTime);
+        printSpeedup("Speedup CSA vs URP:", urpTime, csaTime);
+        printSpeedup("Speedup TD vs MR:", mrTime, tdTime);
 
-        // -- 14. Quality: MR vs ULTRA-TB ----------------------------------
+        // =================================================================
+        //  12. Quality comparisons
+        // =================================================================
         std::cout << "\n=== Quality: MR vs ULTRA-TB ===" << std::endl;
         const QueryStatistics tbStats(queries, dijkstraResults, tbResults);
         std::cout << tbStats << std::endl;
 
-        // -- 15. Quality: MR vs CSA (earliest-arrival comparison) ---------
+        std::cout << "=== Quality: MR vs ULTRA-RAPTOR ===" << std::endl;
+        const QueryStatistics urStats(queries, dijkstraResults, urResults);
+        std::cout << urStats << std::endl;
+
+        std::cout << "=== Quality: MR vs ULTRA-RAPTOR (prune) ===" << std::endl;
+        const QueryStatistics urpStats(queries, dijkstraResults, urpResults);
+        std::cout << urpStats << std::endl;
+
         std::cout << "=== Quality: MR vs Delay-ULTRA-CSA ===" << std::endl;
         printCSAQuality(queries, dijkstraResults, csaResults);
 
-        // -- 16. Quality: MR vs TD-Dijkstra -------------------------------
         std::cout << "\n=== Quality: MR vs TD-Dijkstra ===" << std::endl;
         printTDQuality(queries, dijkstraResults, tdResults);
     }
 
 private:
-    // =====================================================================
-    //  Build Intermediate::Data from (delayed) RAPTOR data
-    // =====================================================================
-    //  This reconstructs the intermediate representation so that
-    //  TimeDependentGraph::FromIntermediate() can build a TD graph
-    //  that reflects the delayed timetable.
-    //
-    //  IMPORTANT: The RAPTOR data has IMPLICIT departure buffer times
-    //  (departureTime reduced by minTransferTime). We RESTORE the
-    //  original (explicit) departure times, because Intermediate::Data
-    //  uses explicit times and FromIntermediate handles buffers itself.
-    // =====================================================================
-    inline Intermediate::Data buildIntermediateFromRAPTOR(
-            const RAPTOR::Data& raptorData) const noexcept {
-        Intermediate::Data result;
-
-        // 1. Copy transfer graph
-        result.transferGraph.addVertices(
-            raptorData.transferGraph.numVertices());
-        for (Vertex v(0);
-             v < raptorData.transferGraph.numVertices(); v++) {
-            result.transferGraph.set(Coordinates, v,
-                raptorData.transferGraph.get(Coordinates, v));
-            for (const Edge e : raptorData.transferGraph.edgesFrom(v)) {
-                const Vertex to =
-                    raptorData.transferGraph.get(ToVertex, e);
-                const int tt =
-                    raptorData.transferGraph.get(TravelTime, e);
-                const Edge ne = result.transferGraph.addEdge(v, to);
-                result.transferGraph.set(TravelTime, ne, tt);
-            }
-        }
-
-        // 2. Copy stops
-        for (const StopId stop : raptorData.stops()) {
-            result.stops.emplace_back(raptorData.stopData[stop]);
-        }
-
-        // 3. Build trips from RAPTOR routes
-        for (const RouteId route : raptorData.routes()) {
-            const StopId* routeStops =
-                raptorData.stopArrayOfRoute(route);
-            const size_t numStops =
-                raptorData.numberOfStopsInRoute(route);
-            const size_t numTrips =
-                raptorData.numberOfTripsInRoute(route);
-
-            for (size_t t = 0; t < numTrips; t++) {
-                result.trips.emplace_back();
-                Intermediate::Trip& trip = result.trips.back();
-
-                const RAPTOR::StopEvent* events =
-                    raptorData.tripOfRoute(route, t);
-
-                for (size_t s = 0; s < numStops; s++) {
-                    // Restore explicit departure time
-                    const int explicitDep =
-                        events[s].departureTime +
-                        raptorData.stopData[routeStops[s]].minTransferTime;
-                    trip.stopEvents.emplace_back(
-                        routeStops[s],
-                        events[s].arrivalTime,
-                        explicitDep);
-                }
-            }
-        }
-
-        return result;
-    }
-
-    // =====================================================================
-    //  Build CSA::Data from delayed RAPTOR data + converted TB shortcuts
-    // =====================================================================
-    inline CSA::Data buildCSAData(
-            const RAPTOR::Data& raptorData,
-            const TripBased::Data& tbData) const noexcept {
-
-        // 1. Build CSA stops from RAPTOR stops
-        std::vector<CSA::Stop> stops;
-        stops.reserve(raptorData.numberOfStops());
-        for (const StopId stop : raptorData.stops()) {
-            stops.emplace_back(raptorData.stopData[stop]);
-        }
-
-        // 2. Build CSA connections from delayed RAPTOR timetable
-        //    RESTORE original departure times by adding back minTransferTime
-        std::vector<CSA::Connection> connections;
-        TripId nextTripId(0);
-        for (const RouteId route : raptorData.routes()) {
-            const StopId* routeStops = raptorData.stopArrayOfRoute(route);
-            const size_t numStops = raptorData.numberOfStopsInRoute(route);
-            const size_t numTrips = raptorData.numberOfTripsInRoute(route);
-            for (size_t t = 0; t < numTrips; t++) {
-                const RAPTOR::StopEvent* events =
-                    raptorData.tripOfRoute(route, t);
-                for (size_t i = 0; i + 1 < numStops; i++) {
-                    const int explicitDepartureTime =
-                        events[i].departureTime +
-                        raptorData.stopData[routeStops[i]].minTransferTime;
-                    connections.emplace_back(
-                        routeStops[i],
-                        routeStops[i + 1],
-                        explicitDepartureTime,
-                        events[i + 1].arrivalTime,
-                        nextTripId
-                    );
-                }
-                nextTripId++;
-            }
-        }
-
-        // 3. Sort connections by departure time (CRITICAL for CSA!)
-        std::sort(connections.begin(), connections.end(),
-            [](const CSA::Connection& a, const CSA::Connection& b) {
-                return a.departureTime < b.departureTime;
-            });
-
-        // 4. Build CSA trips
-        std::vector<CSA::Trip> trips(static_cast<size_t>(nextTripId));
-
-        // 5. Convert TB shortcuts to stop-indexed transfer graph
-        Intermediate::TransferGraph shortcutGraph =
-            convertShortcutsToStopGraph(raptorData, tbData);
-
-        std::cout << "  Shortcut conversion: "
-                  << tbData.stopEventGraph.numEdges()
-                  << " stop-event edges -> "
-                  << shortcutGraph.numEdges()
-                  << " stop edges" << std::endl;
-
-        // 6. Build CSA::Data
-        return CSA::Data::FromInput<false>(stops, connections, trips,
-                                           std::move(shortcutGraph));
-    }
-
     // =====================================================================
     //  Convert TB stop-event-indexed shortcuts to stop-indexed graph
     // =====================================================================
@@ -1268,6 +1190,156 @@ private:
     }
 
     // =====================================================================
+    //  Build CSA::Data from delayed RAPTOR data + pre-computed shortcuts
+    // =====================================================================
+    inline CSA::Data buildCSADataWithShortcuts(
+            const RAPTOR::Data& raptorData,
+            Intermediate::TransferGraph shortcutGraph) const noexcept {
+
+        std::vector<CSA::Stop> stops;
+        stops.reserve(raptorData.numberOfStops());
+        for (const StopId stop : raptorData.stops()) {
+            stops.emplace_back(raptorData.stopData[stop]);
+        }
+
+        std::vector<CSA::Connection> connections;
+        TripId nextTripId(0);
+        for (const RouteId route : raptorData.routes()) {
+            const StopId* routeStops = raptorData.stopArrayOfRoute(route);
+            const size_t numStops = raptorData.numberOfStopsInRoute(route);
+            const size_t numTrips = raptorData.numberOfTripsInRoute(route);
+            for (size_t t = 0; t < numTrips; t++) {
+                const RAPTOR::StopEvent* events =
+                    raptorData.tripOfRoute(route, t);
+                for (size_t i = 0; i + 1 < numStops; i++) {
+                    const int explicitDepartureTime =
+                        events[i].departureTime +
+                        raptorData.stopData[routeStops[i]].minTransferTime;
+                    connections.emplace_back(
+                        routeStops[i], routeStops[i + 1],
+                        explicitDepartureTime,
+                        events[i + 1].arrivalTime,
+                        nextTripId);
+                }
+                nextTripId++;
+            }
+        }
+
+        // CRITICAL: sort by departure time for CSA binary search
+        std::sort(connections.begin(), connections.end(),
+            [](const CSA::Connection& a, const CSA::Connection& b) {
+                return a.departureTime < b.departureTime;
+            });
+
+        std::vector<CSA::Trip> trips(static_cast<size_t>(nextTripId));
+
+        return CSA::Data::FromInput<false>(stops, connections, trips,
+                                           std::move(shortcutGraph));
+    }
+
+    // =====================================================================
+    //  Build RAPTOR::Data with shortcuts-only transfer graph
+    // =====================================================================
+    //  Copies the delayed RAPTOR data (routes, trips, stop events) but
+    //  replaces the transfer graph with one containing ONLY the stop-level
+    //  shortcuts. The graph has the full vertex count (for BucketCH
+    //  compatibility) but edges only between stops.
+    // =====================================================================
+    inline RAPTOR::Data buildShortcutRaptorData(
+            const RAPTOR::Data& raptorData,
+            const Intermediate::TransferGraph& shortcutGraph) const noexcept {
+        RAPTOR::Data result = raptorData;
+
+        const size_t numVertices =
+            raptorData.transferGraph.numVertices();
+
+        Intermediate::TransferGraph dynGraph;
+        dynGraph.addVertices(numVertices);
+
+        // Copy coordinates for all vertices
+        for (Vertex v(0); v < numVertices; v++) {
+            dynGraph.set(Coordinates, v,
+                raptorData.transferGraph.get(Coordinates, v));
+        }
+
+        // Add only shortcut edges (shortcutGraph has numStops vertices)
+        for (Vertex from(0); from < shortcutGraph.numVertices(); from++) {
+            for (const Edge edge : shortcutGraph.edgesFrom(from)) {
+                const Edge ne = dynGraph.addEdge(
+                    from, shortcutGraph.get(ToVertex, edge));
+                dynGraph.set(TravelTime, ne,
+                    shortcutGraph.get(TravelTime, edge));
+            }
+        }
+
+        Graph::move(std::move(dynGraph), result.transferGraph);
+
+        // Ensure implicit departure buffer times for ULTRARAPTOR
+        if (!result.hasImplicitBufferTimes()) {
+            result.useImplicitDepartureBufferTimes();
+        }
+
+        return result;
+    }
+
+    // =====================================================================
+    //  Build Intermediate::Data from delayed RAPTOR data (for TD-Dijkstra)
+    // =====================================================================
+    inline Intermediate::Data buildIntermediateFromRAPTOR(
+            const RAPTOR::Data& raptorData) const noexcept {
+        Intermediate::Data result;
+
+        result.transferGraph.addVertices(
+            raptorData.transferGraph.numVertices());
+        for (Vertex v(0);
+             v < raptorData.transferGraph.numVertices(); v++) {
+            result.transferGraph.set(Coordinates, v,
+                raptorData.transferGraph.get(Coordinates, v));
+            for (const Edge e : raptorData.transferGraph.edgesFrom(v)) {
+                const Vertex to =
+                    raptorData.transferGraph.get(ToVertex, e);
+                const int tt =
+                    raptorData.transferGraph.get(TravelTime, e);
+                const Edge ne = result.transferGraph.addEdge(v, to);
+                result.transferGraph.set(TravelTime, ne, tt);
+            }
+        }
+
+        for (const StopId stop : raptorData.stops()) {
+            result.stops.emplace_back(raptorData.stopData[stop]);
+        }
+
+        for (const RouteId route : raptorData.routes()) {
+            const StopId* routeStops =
+                raptorData.stopArrayOfRoute(route);
+            const size_t numStops =
+                raptorData.numberOfStopsInRoute(route);
+            const size_t numTrips =
+                raptorData.numberOfTripsInRoute(route);
+
+            for (size_t t = 0; t < numTrips; t++) {
+                result.trips.emplace_back();
+                Intermediate::Trip& trip = result.trips.back();
+
+                const RAPTOR::StopEvent* events =
+                    raptorData.tripOfRoute(route, t);
+
+                for (size_t s = 0; s < numStops; s++) {
+                    const int explicitDep =
+                        events[s].departureTime +
+                        raptorData.stopData[routeStops[s]].minTransferTime;
+                    trip.stopEvents.emplace_back(
+                        routeStops[s],
+                        events[s].arrivalTime,
+                        explicitDep);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    // =====================================================================
     //  Query runners
     // =====================================================================
     template<typename ALGORITHM>
@@ -1302,7 +1374,7 @@ private:
     }
 
     // =====================================================================
-    //  Quality comparison (CSA vs MR)
+    //  Quality comparison (CSA vs MR) – earliest-arrival only
     // =====================================================================
     inline void printCSAQuality(
             const std::vector<VertexQuery>& queries,
@@ -1310,60 +1382,41 @@ private:
             const std::vector<std::vector<RAPTOR::ArrivalLabel>>& csaResults
             ) const noexcept {
         const size_t total = queries.size();
-        size_t correct    = 0;
-        size_t missed     = 0;
-        size_t suboptimal = 0;
+        size_t correct = 0, missed = 0, suboptimal = 0;
         std::vector<double> detours;
 
         for (size_t i = 0; i < total; i++) {
             const bool exactReachable = !exactResults[i].empty();
             const bool csaReachable   = !csaResults[i].empty();
 
-            if (!exactReachable && !csaReachable) {
-                correct++;
-                continue;
-            }
-            if (exactReachable && !csaReachable) {
-                missed++;
-                continue;
-            }
-            if (!exactReachable && csaReachable) {
-                correct++;
-                continue;
-            }
+            if (!exactReachable && !csaReachable) { correct++; continue; }
+            if (exactReachable && !csaReachable)  { missed++;  continue; }
+            if (!exactReachable && csaReachable)   { correct++; continue; }
 
             int exactEarliest = INFTY;
-            for (const auto& label : exactResults[i]) {
+            for (const auto& label : exactResults[i])
                 exactEarliest = std::min(exactEarliest, label.arrivalTime);
-            }
             const int csaArrival = csaResults[i].front().arrivalTime;
 
             if (csaArrival <= exactEarliest) {
                 correct++;
             } else {
                 suboptimal++;
-                const int travelTime =
-                    exactEarliest - queries[i].departureTime;
-                if (travelTime > 0) {
-                    detours.emplace_back(
-                        (csaArrival - exactEarliest)
-                        / static_cast<double>(travelTime));
-                }
+                const int tt = exactEarliest - queries[i].departureTime;
+                if (tt > 0) detours.emplace_back(
+                    (csaArrival - exactEarliest) / static_cast<double>(tt));
             }
         }
 
         std::cout << "  Total queries:    " << total << std::endl;
-        std::cout << "  Correct:          " << correct
-                  << " (" << String::percent(
-                         correct / static_cast<double>(total))
+        std::cout << "  Correct:          " << correct << " ("
+                  << String::percent(correct / static_cast<double>(total))
                   << ")" << std::endl;
-        std::cout << "  Missed:           " << missed
-                  << " (" << String::percent(
-                         missed / static_cast<double>(total))
+        std::cout << "  Missed:           " << missed << " ("
+                  << String::percent(missed / static_cast<double>(total))
                   << ")" << std::endl;
-        std::cout << "  Suboptimal:       " << suboptimal
-                  << " (" << String::percent(
-                         suboptimal / static_cast<double>(total))
+        std::cout << "  Suboptimal:       " << suboptimal << " ("
+                  << String::percent(suboptimal / static_cast<double>(total))
                   << ")" << std::endl;
         if (!detours.empty()) {
             std::sort(detours.begin(), detours.end());
@@ -1378,7 +1431,7 @@ private:
     }
 
     // =====================================================================
-    //  Quality comparison (TD-Dijkstra vs MR)
+    //  Quality comparison (TD-Dijkstra vs MR) – scalar arrival times
     // =====================================================================
     inline void printTDQuality(
             const std::vector<VertexQuery>& queries,
@@ -1386,33 +1439,20 @@ private:
             const std::vector<int>& tdResults
             ) const noexcept {
         const size_t total = queries.size();
-        size_t correct    = 0;
-        size_t missed     = 0;
-        size_t suboptimal = 0;
-        size_t mismatchCount = 0;
+        size_t correct = 0, missed = 0, suboptimal = 0, mismatchCount = 0;
         int maxDiff = 0;
         double totalDiff = 0;
 
         for (size_t i = 0; i < total; i++) {
             int mrEarliest = INFTY;
-            for (const auto& label : exactResults[i]) {
+            for (const auto& label : exactResults[i])
                 mrEarliest = std::min(mrEarliest, label.arrivalTime);
-            }
             const bool mrReachable = (mrEarliest < INFTY);
             const bool tdReachable = (tdResults[i] != never && tdResults[i] != intMax);
 
-            if (!mrReachable && !tdReachable) {
-                correct++;
-                continue;
-            }
-            if (mrReachable && !tdReachable) {
-                missed++;
-                continue;
-            }
-            if (!mrReachable && tdReachable) {
-                correct++;
-                continue;
-            }
+            if (!mrReachable && !tdReachable) { correct++; continue; }
+            if (mrReachable && !tdReachable)  { missed++;  continue; }
+            if (!mrReachable && tdReachable)   { correct++; continue; }
 
             if (tdResults[i] == mrEarliest) {
                 correct++;
@@ -1426,24 +1466,20 @@ private:
                     std::cout << "  Mismatch query " << i
                               << ": MR=" << mrEarliest
                               << ", TD=" << tdResults[i]
-                              << " (diff=" << diff << "s)"
-                              << std::endl;
+                              << " (diff=" << diff << "s)" << std::endl;
                 }
             }
         }
 
         std::cout << "  Total queries:    " << total << std::endl;
-        std::cout << "  Correct:          " << correct
-                  << " (" << String::percent(
-                         correct / static_cast<double>(total))
+        std::cout << "  Correct:          " << correct << " ("
+                  << String::percent(correct / static_cast<double>(total))
                   << ")" << std::endl;
-        std::cout << "  Missed:           " << missed
-                  << " (" << String::percent(
-                         missed / static_cast<double>(total))
+        std::cout << "  Missed:           " << missed << " ("
+                  << String::percent(missed / static_cast<double>(total))
                   << ")" << std::endl;
-        std::cout << "  Mismatches:       " << suboptimal
-                  << " (" << String::percent(
-                         suboptimal / static_cast<double>(total))
+        std::cout << "  Mismatches:       " << suboptimal << " ("
+                  << String::percent(suboptimal / static_cast<double>(total))
                   << ")" << std::endl;
         if (mismatchCount > 0) {
             std::cout << "  Max difference:   " << maxDiff << "s" << std::endl;
