@@ -1964,7 +1964,7 @@ public:
         size_t fcMemory = fcTripCount * sizeof(DiscreteTrip);
 
         // Estimate FC structure overhead (simplified)
-        size_t fcOverhead = 0;
+        [[maybe_unused]] size_t fcOverhead = 0;
         // This is a rough estimate - actual FC data structure size would need detailed calculation
 
         std::cout << "  Classic core data: ~" << (classicMemory / 1024.0 / 1024.0) << " MB" << std::endl;
