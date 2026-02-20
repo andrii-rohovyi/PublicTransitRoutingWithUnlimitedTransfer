@@ -13,6 +13,11 @@ using namespace Shell;
 #include "../../Algorithms/CSA/ULTRACSA.h"
 #include "../../Algorithms/RAPTOR/HLRAPTOR.h"
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulBucketCH.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulBSTBucketCH.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulCSTBucketCH.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulFCBucketCH.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulClassicBucketCH.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStateful.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulClassic.h"
 #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulFC.h"
@@ -34,6 +39,643 @@ using namespace Shell;
 #include "../../DataStructures/TripBased/Data.h"
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../DataStructures/Intermediate/Data.h"
+
+
+class CompareAllAlgorithms : public ParameterizedCommand {
+
+public:
+    CompareAllAlgorithms(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareAllAlgorithms",
+            "Compares MR, TD-Dijkstra variants, JTS, TTN (FC/CST/BST), and ULTRA-CSA.") {
+        addParameter("RAPTOR input file");
+        addParameter("CSA input file");
+        addParameter("Intermediate input file");
+        addParameter("Core CH input file");
+        addParameter("Full CH input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        // ==================== LOAD DATA ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "         LOADING DATA" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        Timer loadTimer;
+        double raptorLoadTime = 0.0;
+        double csaLoadTime = 0.0;
+        double intermediateLoadTime = 0.0;
+        double coreCHLoadTime = 0.0;
+        double fullCHLoadTime = 0.0;
+
+        double tdGraphBuildTime = 0.0;
+        double tdGraphClassicBuildTime = 0.0;
+        double tdGraphFCBuildTime = 0.0;
+        double tdGraphCSTBuildTime = 0.0;
+        double tdGraphBSTBuildTime = 0.0;
+
+        double bucketClassicBuildTime = 0.0;
+        double bucketJTSBuildTime = 0.0;
+        double bucketFCBuildTime = 0.0;
+        double bucketCSTBuildTime = 0.0;
+        double bucketBSTBuildTime = 0.0;
+
+        // Load RAPTOR data
+        std::cout << "Loading RAPTOR data..." << std::endl;
+        loadTimer.restart();
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+        raptorLoadTime = loadTimer.elapsedMilliseconds();
+
+        // Load CSA data
+        std::cout << "\nLoading CSA data..." << std::endl;
+        loadTimer.restart();
+        CSA::Data csaData = CSA::Data::FromBinary(getParameter("CSA input file"));
+        csaData.sortConnectionsAscending();
+        csaData.printInfo();
+        csaLoadTime = loadTimer.elapsedMilliseconds();
+
+        // Load Intermediate data and build TD graphs
+        std::cout << "\nLoading Intermediate data..." << std::endl;
+        loadTimer.restart();
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate input file"));
+        std::cout << "Intermediate data: " << intermediateData.numberOfStops() << " stops, "
+                  << intermediateData.numberOfTrips() << " trips" << std::endl;
+        intermediateLoadTime = loadTimer.elapsedMilliseconds();
+
+        // Build all graph variants
+        std::cout << "\nBuilding TimeDependentGraph (JTS)..." << std::endl;
+        Timer buildTimer;
+        TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(intermediateData);
+        tdGraphBuildTime = buildTimer.elapsedMilliseconds();
+        std::cout << "TD graph created: " << tdGraph.numVertices() << " vertices, "
+                  << tdGraph.numEdges() << " edges in " << String::msToString(tdGraphBuildTime) << std::endl;
+
+        std::cout << "\nBuilding TimeDependentGraphClassic (TD-Dijkstra Classic)..." << std::endl;
+        buildTimer.restart();
+        TimeDependentGraphClassic tdGraphClassic = TimeDependentGraphClassic::FromIntermediate(intermediateData);
+        tdGraphClassicBuildTime = buildTimer.elapsedMilliseconds();
+        std::cout << "TD Classic graph created: " << tdGraphClassic.numVertices() << " vertices, "
+                  << tdGraphClassic.numEdges() << " edges in " << String::msToString(tdGraphClassicBuildTime) << std::endl;
+
+        std::cout << "\nBuilding TimeDependentGraphFC (TTN-FC)..." << std::endl;
+        buildTimer.restart();
+        TimeDependentGraphFC tdGraphFC = TimeDependentGraphFC::FromIntermediate(intermediateData);
+        tdGraphFCBuildTime = buildTimer.elapsedMilliseconds();
+        std::cout << "TD FC graph created: " << tdGraphFC.numVertices() << " vertices, "
+                  << tdGraphFC.numEdges() << " edges in " << String::msToString(tdGraphFCBuildTime) << std::endl;
+
+        std::cout << "\nBuilding TimeDependentGraphCST (TTN-CST)..." << std::endl;
+        buildTimer.restart();
+        TimeDependentGraphCST tdGraphCST = TimeDependentGraphCST::FromIntermediate(intermediateData);
+        tdGraphCSTBuildTime = buildTimer.elapsedMilliseconds();
+        std::cout << "TD CST graph created: " << tdGraphCST.numVertices() << " vertices, "
+                  << tdGraphCST.numEdges() << " edges in " << String::msToString(tdGraphCSTBuildTime) << std::endl;
+
+        std::cout << "\nBuilding TimeDependentGraphBST (TTN-BST)..." << std::endl;
+        buildTimer.restart();
+        TimeDependentGraphBST tdGraphBST = TimeDependentGraphBST::FromIntermediate(intermediateData);
+        tdGraphBSTBuildTime = buildTimer.elapsedMilliseconds();
+        std::cout << "TD BST graph created: " << tdGraphBST.numVertices() << " vertices, "
+                  << tdGraphBST.numEdges() << " edges in " << String::msToString(tdGraphBSTBuildTime) << std::endl;
+
+        // Load Core-CH
+        std::cout << "\nLoading Core-CH..." << std::endl;
+        loadTimer.restart();
+        CH::CH coreCH(getParameter("Core CH input file"));
+        std::cout << "Core-CH loaded: " << coreCH.numVertices() << " vertices" << std::endl;
+        coreCHLoadTime = loadTimer.elapsedMilliseconds();
+
+        // Load Full CH (for Bucket-CH)
+        std::cout << "\nLoading Full CH (for Bucket-CH)..." << std::endl;
+        loadTimer.restart();
+        CH::CH fullCH(getParameter("Full CH input file"));
+        std::cout << "Full CH loaded: " << fullCH.numVertices() << " vertices" << std::endl;
+        fullCHLoadTime = loadTimer.elapsedMilliseconds();
+
+        // ==================== GENERATE QUERIES ====================
+        const size_t n = getParameter<size_t>("Number of queries");
+        const size_t maxVertices = std::min(coreCH.numVertices(), fullCH.numVertices());
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(maxVertices, n);
+        std::cout << "\nGenerated " << n << " random queries" << std::endl;
+
+        // Results storage - 12 algorithms total
+        std::vector<int> results_mr_corech;
+        std::vector<int> results_td_classic_corech;
+        std::vector<int> results_td_classic_bucketch;
+        std::vector<int> results_jts_corech;
+        std::vector<int> results_jts_bucketch;
+        std::vector<int> results_fc_corech;
+        std::vector<int> results_fc_bucketch;
+        std::vector<int> results_cst_corech;
+        std::vector<int> results_cst_bucketch;
+        std::vector<int> results_bst_corech;
+        std::vector<int> results_bst_bucketch;
+        std::vector<int> results_ultra_csa;
+
+        results_mr_corech.reserve(n);
+        results_td_classic_corech.reserve(n);
+        results_td_classic_bucketch.reserve(n);
+        results_jts_corech.reserve(n);
+        results_jts_bucketch.reserve(n);
+        results_fc_corech.reserve(n);
+        results_fc_bucketch.reserve(n);
+        results_cst_corech.reserve(n);
+        results_cst_bucketch.reserve(n);
+        results_bst_corech.reserve(n);
+        results_bst_bucketch.reserve(n);
+        results_ultra_csa.reserve(n);
+
+        // ==================== ALGORITHM 1: MR with Core-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  1. MR (DijkstraRAPTOR) with Core-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        using MRCoreCH = RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false>;
+        MRCoreCH algorithm_mr(raptorData, coreCH);
+
+        Timer mrTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_mr.run(query.source, query.departureTime, query.target);
+            results_mr_corech.push_back(algorithm_mr.getEarliestArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  MR (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double mrTime = mrTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(mrTime) << " (" << (mrTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 2: TD-Dijkstra Classic with Core-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  2. TD-Dijkstra Classic with Core-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        using TDClassicCoreCH = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        TDClassicCoreCH algorithm_td_classic_corech(tdGraphClassic, raptorData.numberOfStops(), &coreCH);
+
+        Timer tdClassicCoreCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_td_classic_corech.run(query.source, query.departureTime, query.target);
+            results_td_classic_corech.push_back(algorithm_td_classic_corech.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD Classic (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double tdClassicCoreCHTime = tdClassicCoreCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(tdClassicCoreCHTime) << " (" << (tdClassicCoreCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 3: TD-Dijkstra Classic with Bucket-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  3. TD-Dijkstra Classic with Bucket-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << "Building Bucket-CH for TD Classic..." << std::endl;
+        Timer bucketClassicBuildTimer;
+        using TDClassicBucketCH = TimeDependentDijkstraStatefulClassicBucketCH<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        TDClassicBucketCH algorithm_td_classic_bucketch(tdGraphClassic, raptorData.numberOfStops(), &fullCH);
+        bucketClassicBuildTime = bucketClassicBuildTimer.elapsedMilliseconds();
+        std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketClassicBuildTime) << std::endl;
+
+        Timer tdClassicBucketCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_td_classic_bucketch.run(query.source, query.departureTime, query.target);
+            results_td_classic_bucketch.push_back(algorithm_td_classic_bucketch.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TD Classic (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double tdClassicBucketCHTime = tdClassicBucketCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(tdClassicBucketCHTime) << " (" << (tdClassicBucketCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 4: JTS with Core-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  4. JTS with Core-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        using JTSCoreCH = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        JTSCoreCH algorithm_jts_corech(tdGraph, raptorData.numberOfStops(), &coreCH);
+
+        Timer jtsCoreCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_jts_corech.run(query.source, query.departureTime, query.target);
+            results_jts_corech.push_back(algorithm_jts_corech.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  JTS (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double jtsCoreCHTime = jtsCoreCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(jtsCoreCHTime) << " (" << (jtsCoreCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 5: JTS with Bucket-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  5. JTS with Bucket-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << "Building Bucket-CH for JTS..." << std::endl;
+        Timer bucketJTSBuildTimer;
+        using JTSBucketCH = TimeDependentDijkstraStatefulBucketCH<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        JTSBucketCH algorithm_jts_bucketch(tdGraph, raptorData.numberOfStops(), &fullCH);
+        bucketJTSBuildTime = bucketJTSBuildTimer.elapsedMilliseconds();
+        std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketJTSBuildTime) << std::endl;
+
+        Timer jtsBucketCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_jts_bucketch.run(query.source, query.departureTime, query.target);
+            results_jts_bucketch.push_back(algorithm_jts_bucketch.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  JTS (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double jtsBucketCHTime = jtsBucketCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(jtsBucketCHTime) << " (" << (jtsBucketCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 6: TTN-FC with Core-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  6. TTN-FC with Core-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        using FCCoreCH = TimeDependentDijkstraStatefulFC<TDD::AggregateProfiler, false, true>;
+        FCCoreCH algorithm_fc_corech(tdGraphFC, raptorData.numberOfStops(), &coreCH);
+
+        Timer fcCoreCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_fc_corech.run(query.source, query.departureTime, query.target);
+            results_fc_corech.push_back(algorithm_fc_corech.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TTN-FC (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double fcCoreCHTime = fcCoreCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(fcCoreCHTime) << " (" << (fcCoreCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 7: TTN-FC with Bucket-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  7. TTN-FC with Bucket-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << "Building Bucket-CH for TTN-FC..." << std::endl;
+        Timer bucketFCBuildTimer;
+        using FCBucketCH = TimeDependentDijkstraStatefulFCBucketCH<TimeDependentGraphFC, TDD::AggregateProfiler, false, true>;
+        FCBucketCH algorithm_fc_bucketch(tdGraphFC, raptorData.numberOfStops(), &fullCH);
+        bucketFCBuildTime = bucketFCBuildTimer.elapsedMilliseconds();
+        std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketFCBuildTime) << std::endl;
+
+        Timer fcBucketCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_fc_bucketch.run(query.source, query.departureTime, query.target);
+            results_fc_bucketch.push_back(algorithm_fc_bucketch.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TTN-FC (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double fcBucketCHTime = fcBucketCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(fcBucketCHTime) << " (" << (fcBucketCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 8: TTN-CST with Core-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  8. TTN-CST with Core-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        using CSTCoreCH = TimeDependentDijkstraStatefulCST<TDD::AggregateProfiler, false, true>;
+        CSTCoreCH algorithm_cst_corech(tdGraphCST, raptorData.numberOfStops(), &coreCH);
+
+        Timer cstCoreCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_cst_corech.run(query.source, query.departureTime, query.target);
+            results_cst_corech.push_back(algorithm_cst_corech.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TTN-CST (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double cstCoreCHTime = cstCoreCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(cstCoreCHTime) << " (" << (cstCoreCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 9: TTN-CST with Bucket-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  9. TTN-CST with Bucket-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << "Building Bucket-CH for TTN-CST..." << std::endl;
+        Timer bucketCSTBuildTimer;
+        using CSTBucketCH = TimeDependentDijkstraStatefulCSTBucketCH<TimeDependentGraphCST, TDD::AggregateProfiler, false, true>;
+        CSTBucketCH algorithm_cst_bucketch(tdGraphCST, raptorData.numberOfStops(), &fullCH);
+        bucketCSTBuildTime = bucketCSTBuildTimer.elapsedMilliseconds();
+        std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketCSTBuildTime) << std::endl;
+
+        Timer cstBucketCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_cst_bucketch.run(query.source, query.departureTime, query.target);
+            results_cst_bucketch.push_back(algorithm_cst_bucketch.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TTN-CST (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double cstBucketCHTime = cstBucketCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(cstBucketCHTime) << " (" << (cstBucketCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 10: TTN-BST with Core-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  10. TTN-BST with Core-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        using BSTCoreCH = TimeDependentDijkstraStatefulBST<TDD::AggregateProfiler, false, true>;
+        BSTCoreCH algorithm_bst_corech(tdGraphBST, raptorData.numberOfStops(), &coreCH);
+
+        Timer bstCoreCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_bst_corech.run(query.source, query.departureTime, query.target);
+            results_bst_corech.push_back(algorithm_bst_corech.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TTN-BST (Core-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double bstCoreCHTime = bstCoreCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(bstCoreCHTime) << " (" << (bstCoreCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 11: TTN-BST with Bucket-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  11. TTN-BST with Bucket-CH" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << "Building Bucket-CH for TTN-BST..." << std::endl;
+        Timer bucketBSTBuildTimer;
+        using BSTBucketCH = TimeDependentDijkstraStatefulBSTBucketCH<TimeDependentGraphBST, TDD::AggregateProfiler, false, true>;
+        BSTBucketCH algorithm_bst_bucketch(tdGraphBST, raptorData.numberOfStops(), &fullCH);
+        bucketBSTBuildTime = bucketBSTBuildTimer.elapsedMilliseconds();
+        std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketBSTBuildTime) << std::endl;
+
+        Timer bstBucketCHTimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_bst_bucketch.run(query.source, query.departureTime, query.target);
+            results_bst_bucketch.push_back(algorithm_bst_bucketch.getArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  TTN-BST (Bucket-CH): " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double bstBucketCHTime = bstBucketCHTimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(bstBucketCHTime) << " (" << (bstBucketCHTime / n) << " ms/query)" << std::endl;
+
+        // ==================== ALGORITHM 12: ULTRA-CSA with Bucket-CH ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "  12. ULTRA-CSA with Bucket-CH (Full CH)" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        CSA::ULTRACSA<true, 0, CSA::AggregateProfiler> algorithm_ultra_csa(csaData, fullCH);
+
+        Timer ultraCSATimer;
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& query = queries[i];
+            algorithm_ultra_csa.run(query.source, query.departureTime, query.target);
+            results_ultra_csa.push_back(algorithm_ultra_csa.getEarliestArrivalTime(query.target));
+            if ((i + 1) % 100 == 0 || i + 1 == queries.size()) {
+                std::cout << "\r  ULTRA-CSA: " << (i + 1) << "/" << n << " queries" << std::flush;
+            }
+        }
+        double ultraCSATime = ultraCSATimer.elapsedMilliseconds();
+        std::cout << std::endl;
+        std::cout << "Total time: " << String::msToString(ultraCSATime) << " (" << (ultraCSATime / n) << " ms/query)" << std::endl;
+
+        // ==================== PREPROCESSING SUMMARY ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "       PREPROCESSING TIMES" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        const double totalPreprocessingTime =
+            raptorLoadTime + csaLoadTime + intermediateLoadTime +
+            tdGraphBuildTime + tdGraphClassicBuildTime + tdGraphFCBuildTime + tdGraphCSTBuildTime + tdGraphBSTBuildTime +
+            coreCHLoadTime + fullCHLoadTime +
+            bucketClassicBuildTime + bucketJTSBuildTime + bucketFCBuildTime + bucketCSTBuildTime + bucketBSTBuildTime;
+
+        std::cout << "RAPTOR load:                 " << String::msToString(raptorLoadTime) << std::endl;
+        std::cout << "CSA load:                    " << String::msToString(csaLoadTime) << std::endl;
+        std::cout << "Intermediate load:           " << String::msToString(intermediateLoadTime) << std::endl;
+        std::cout << "TD Graph (JTS):              " << String::msToString(tdGraphBuildTime) << std::endl;
+        std::cout << "TD Graph (Classic):          " << String::msToString(tdGraphClassicBuildTime) << std::endl;
+        std::cout << "TD Graph (FC):               " << String::msToString(tdGraphFCBuildTime) << std::endl;
+        std::cout << "TD Graph (CST):              " << String::msToString(tdGraphCSTBuildTime) << std::endl;
+        std::cout << "TD Graph (BST):              " << String::msToString(tdGraphBSTBuildTime) << std::endl;
+        std::cout << "Core-CH load:                " << String::msToString(coreCHLoadTime) << std::endl;
+        std::cout << "Full CH load:                " << String::msToString(fullCHLoadTime) << std::endl;
+        std::cout << "Bucket-CH (Classic):         " << String::msToString(bucketClassicBuildTime) << std::endl;
+        std::cout << "Bucket-CH (JTS):             " << String::msToString(bucketJTSBuildTime) << std::endl;
+        std::cout << "Bucket-CH (FC):              " << String::msToString(bucketFCBuildTime) << std::endl;
+        std::cout << "Bucket-CH (CST):             " << String::msToString(bucketCSTBuildTime) << std::endl;
+        std::cout << "Bucket-CH (BST):             " << String::msToString(bucketBSTBuildTime) << std::endl;
+        std::cout << "Total preprocessing time:    " << String::msToString(totalPreprocessingTime) << std::endl;
+
+        // ==================== CORRECTNESS COMPARISON ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "         CORRECTNESS COMPARISON" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        auto compareResults = [&](const std::string& name, const std::vector<int>& results, bool detailed = false) {
+            size_t matches = 0;
+            size_t mismatches = 0;
+            size_t bothUnreachable = 0;
+            size_t onlyGroundTruthReachable = 0;
+            size_t onlyTestReachable = 0;
+            int maxDiff = 0;
+            double totalDiff = 0;
+            size_t diffCount = 0;
+            std::vector<int> differences;
+
+            for (size_t i = 0; i < n; ++i) {
+                bool gtReachable = (results_mr_corech[i] != never && results_mr_corech[i] != intMax);
+                bool testReachable = (results[i] != never && results[i] != intMax);
+
+                if (!gtReachable && !testReachable) {
+                    bothUnreachable++;
+                    matches++;
+                } else if (gtReachable && !testReachable) {
+                    onlyGroundTruthReachable++;
+                    mismatches++;
+                } else if (!gtReachable && testReachable) {
+                    onlyTestReachable++;
+                    mismatches++;
+                } else {
+                    int diff = results[i] - results_mr_corech[i];
+                    if (diff == 0) {
+                        matches++;
+                    } else {
+                        mismatches++;
+                        diffCount++;
+                        differences.push_back(diff);
+                        if (std::abs(diff) > std::abs(maxDiff)) maxDiff = diff;
+                        totalDiff += std::abs(diff);
+                    }
+                }
+            }
+
+            std::cout << name << " vs MR (Core-CH): ";
+            std::cout << matches << "/" << n << " (" << std::fixed << std::setprecision(1)
+                      << (100.0 * matches / n) << "%)";
+
+            if (mismatches > 0 && detailed && diffCount > 0) {
+                std::sort(differences.begin(), differences.end());
+                std::cout << " | Avg diff: " << (totalDiff / diffCount / 60.0) << " min"
+                          << ", Median: " << (differences[differences.size() / 2] / 60.0) << " min"
+                          << ", Max: " << (maxDiff / 60.0) << " min";
+            }
+
+            if (matches == n) {
+                std::cout << " ✅";
+            } else {
+                std::cout << " ❌";
+            }
+            std::cout << std::endl;
+
+            return matches == n;
+        };
+
+        std::cout << "Ground Truth: MR (Core-CH)\n" << std::endl;
+
+        bool td_classic_corech_correct = compareResults("TD-Dijkstra Classic (Core-CH)", results_td_classic_corech, true);
+        bool td_classic_bucketch_correct = compareResults("TD-Dijkstra Classic (Bucket-CH)", results_td_classic_bucketch, true);
+        bool jts_corech_correct = compareResults("JTS (Core-CH)", results_jts_corech, false);
+        bool jts_bucketch_correct = compareResults("JTS (Bucket-CH)", results_jts_bucketch, false);
+        bool fc_corech_correct = compareResults("TTN-FC (Core-CH)", results_fc_corech, true);
+        bool fc_bucketch_correct = compareResults("TTN-FC (Bucket-CH)", results_fc_bucketch, true);
+        bool cst_corech_correct = compareResults("TTN-CST (Core-CH)", results_cst_corech, true);
+        bool cst_bucketch_correct = compareResults("TTN-CST (Bucket-CH)", results_cst_bucketch, true);
+        bool bst_corech_correct = compareResults("TTN-BST (Core-CH)", results_bst_corech, true);
+        bool bst_bucketch_correct = compareResults("TTN-BST (Bucket-CH)", results_bst_bucketch, true);
+        bool ultra_csa_correct = compareResults("ULTRA-CSA (Bucket-CH)", results_ultra_csa, false);
+
+        // ==================== PERFORMANCE SUMMARY ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "         PERFORMANCE SUMMARY" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << std::fixed << std::setprecision(2);
+
+        std::cout << "┌─────────────────────────────────┬────────────┬───────────┬─────────┐" << std::endl;
+        std::cout << "│ Algorithm                       │ Time [ms]  │ Speedup   │ Correct │" << std::endl;
+        std::cout << "├─────────────────────────────────┼────────────┼───────────┼─────────┤" << std::endl;
+
+        auto printRow = [&](const std::string& name, double time, bool correct, bool isBaseline = false) {
+            std::cout << "│ " << std::left << std::setw(31) << name << " │ "
+                      << std::right << std::setw(10) << (time / n) << " │ ";
+            if (isBaseline) {
+                std::cout << std::setw(9) << "baseline";
+            } else {
+                std::cout << std::setw(8) << (mrTime / time) << "x";
+            }
+            std::cout << " │ " << (correct ? "  ✅   " : "  ❌   ") << " │" << std::endl;
+        };
+
+        printRow("MR (Core-CH)", mrTime, true, true);
+        printRow("TD-Dijkstra Classic (Core-CH)", tdClassicCoreCHTime, td_classic_corech_correct);
+        printRow("TD-Dijkstra Classic (Bucket-CH)", tdClassicBucketCHTime, td_classic_bucketch_correct);
+        printRow("JTS (Core-CH)", jtsCoreCHTime, jts_corech_correct);
+        printRow("JTS (Bucket-CH)", jtsBucketCHTime, jts_bucketch_correct);
+        printRow("TTN-FC (Core-CH)", fcCoreCHTime, fc_corech_correct);
+        printRow("TTN-FC (Bucket-CH)", fcBucketCHTime, fc_bucketch_correct);
+        printRow("TTN-CST (Core-CH)", cstCoreCHTime, cst_corech_correct);
+        printRow("TTN-CST (Bucket-CH)", cstBucketCHTime, cst_bucketch_correct);
+        printRow("TTN-BST (Core-CH)", bstCoreCHTime, bst_corech_correct);
+        printRow("TTN-BST (Bucket-CH)", bstBucketCHTime, bst_bucketch_correct);
+        printRow("ULTRA-CSA (Bucket-CH)", ultraCSATime, ultra_csa_correct);
+
+        std::cout << "└─────────────────────────────────┴────────────┴───────────┴─────────┘" << std::endl;
+
+        // ==================== PREPROCESSING TIMES ====================
+        std::cout << "\nPreprocessing Times:" << std::endl;
+        std::cout << "  TD Graph (JTS):       " << String::msToString(tdGraphBuildTime) << std::endl;
+        std::cout << "  TD Graph (Classic):   " << String::msToString(tdGraphClassicBuildTime) << std::endl;
+        std::cout << "  TD Graph (FC):        " << String::msToString(tdGraphFCBuildTime) << std::endl;
+        std::cout << "  TD Graph (CST):       " << String::msToString(tdGraphCSTBuildTime) << std::endl;
+        std::cout << "  TD Graph (BST):       " << String::msToString(tdGraphBSTBuildTime) << std::endl;
+        std::cout << "  Bucket-CH (Classic):  " << String::msToString(bucketClassicBuildTime) << std::endl;
+        std::cout << "  Bucket-CH (JTS):      " << String::msToString(bucketJTSBuildTime) << std::endl;
+        std::cout << "  Bucket-CH (FC):       " << String::msToString(bucketFCBuildTime) << std::endl;
+        std::cout << "  Bucket-CH (CST):      " << String::msToString(bucketCSTBuildTime) << std::endl;
+        std::cout << "  Bucket-CH (BST):      " << String::msToString(bucketBSTBuildTime) << std::endl;
+
+        // ==================== TTN COMPARISON ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "         TTN COMPARISON" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        std::cout << "TTN vs TD-Dijkstra Classic (Core-CH):" << std::endl;
+        std::cout << "  TTN-FC:  " << (tdClassicCoreCHTime / fcCoreCHTime) << "x" << std::endl;
+        std::cout << "  TTN-CST: " << (tdClassicCoreCHTime / cstCoreCHTime) << "x" << std::endl;
+        std::cout << "  TTN-BST: " << (tdClassicCoreCHTime / bstCoreCHTime) << "x" << std::endl;
+
+        std::cout << "\nTTN vs TD-Dijkstra Classic (Bucket-CH):" << std::endl;
+        std::cout << "  TTN-FC:  " << (tdClassicBucketCHTime / fcBucketCHTime) << "x" << std::endl;
+        std::cout << "  TTN-CST: " << (tdClassicBucketCHTime / cstBucketCHTime) << "x" << std::endl;
+        std::cout << "  TTN-BST: " << (tdClassicBucketCHTime / bstBucketCHTime) << "x" << std::endl;
+
+        std::cout << "\nTTN variants comparison (Bucket-CH):" << std::endl;
+        double minTTN = std::min({fcBucketCHTime, cstBucketCHTime, bstBucketCHTime});
+        std::cout << "  Fastest TTN: ";
+        if (minTTN == fcBucketCHTime) std::cout << "TTN-FC";
+        else if (minTTN == cstBucketCHTime) std::cout << "TTN-CST";
+        else std::cout << "TTN-BST";
+        std::cout << " at " << (minTTN / n) << " ms/query" << std::endl;
+
+        // ==================== FINAL CONCLUSION ====================
+        std::cout << "\n========================================" << std::endl;
+        std::cout << "            CONCLUSION" << std::endl;
+        std::cout << "========================================\n" << std::endl;
+
+        // Find fastest correct algorithm
+        std::vector<std::pair<std::string, double>> correctAlgos;
+        correctAlgos.push_back({"MR (Core-CH)", mrTime});
+        if (td_classic_corech_correct) correctAlgos.push_back({"TD-Dijkstra Classic (Core-CH)", tdClassicCoreCHTime});
+        if (td_classic_bucketch_correct) correctAlgos.push_back({"TD-Dijkstra Classic (Bucket-CH)", tdClassicBucketCHTime});
+        if (jts_corech_correct) correctAlgos.push_back({"JTS (Core-CH)", jtsCoreCHTime});
+        if (jts_bucketch_correct) correctAlgos.push_back({"JTS (Bucket-CH)", jtsBucketCHTime});
+        if (fc_corech_correct) correctAlgos.push_back({"TTN-FC (Core-CH)", fcCoreCHTime});
+        if (fc_bucketch_correct) correctAlgos.push_back({"TTN-FC (Bucket-CH)", fcBucketCHTime});
+        if (cst_corech_correct) correctAlgos.push_back({"TTN-CST (Core-CH)", cstCoreCHTime});
+        if (cst_bucketch_correct) correctAlgos.push_back({"TTN-CST (Bucket-CH)", cstBucketCHTime});
+        if (bst_corech_correct) correctAlgos.push_back({"TTN-BST (Core-CH)", bstCoreCHTime});
+        if (bst_bucketch_correct) correctAlgos.push_back({"TTN-BST (Bucket-CH)", bstBucketCHTime});
+        if (ultra_csa_correct) correctAlgos.push_back({"ULTRA-CSA (Bucket-CH)", ultraCSATime});
+
+        auto fastest = std::min_element(correctAlgos.begin(), correctAlgos.end(),
+            [](const auto& a, const auto& b) { return a.second < b.second; });
+        std::cout << "Fastest CORRECT algorithm: " << fastest->first
+                  << " at " << (fastest->second / n) << " ms/query" << std::endl;
+
+        // Check if TTN provides speedup
+        bool ttn_helps = (fc_corech_correct && fcCoreCHTime < tdClassicCoreCHTime) ||
+                         (cst_corech_correct && cstCoreCHTime < tdClassicCoreCHTime) ||
+                         (bst_corech_correct && bstCoreCHTime < tdClassicCoreCHTime);
+
+        if (ttn_helps) {
+            std::cout << "\n✅ TTN provides speedup over TD-Dijkstra Classic in this C++ implementation." << std::endl;
+        } else {
+            std::cout << "\n⚠️  TTN does NOT provide significant speedup over TD-Dijkstra Classic in C++." << std::endl;
+            std::cout << "   This is expected: std::lower_bound on contiguous vectors already has excellent" << std::endl;
+            std::cout << "   cache performance, leaving little room for TTN's optimization." << std::endl;
+        }
+    }
+};
 
 class BuildTDGraph : public ParameterizedCommand {
 

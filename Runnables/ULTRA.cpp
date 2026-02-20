@@ -36,6 +36,7 @@ int main(int argc, char** argv) {
     new ValidateStopToStopShortcuts(shell);
     new ValidateEventToEventShortcuts(shell);
     new CompareFCvsClassicVariants(shell);
+    new CompareAllAlgorithms(shell);
 
     //ULTRA
     new RunTransitiveCSAQueries(shell);
@@ -85,6 +86,9 @@ int main(int argc, char** argv) {
     new CompareCSTvsClassicVariants(shell);
     new CompareBSTvsClassicVariants(shell);
     new CompareJTSvsTD(shell);
+    new CompareMCTDDvsMCR(shell);
+    new RunMCTDDQueries(shell);
+    new CheckMCTDDCorrectness(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);
