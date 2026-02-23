@@ -35,6 +35,9 @@
 #include "../../DataStructures/CSA/Data.h"
 #include "../../Algorithms/CSA/ULTRACSA.h"
 
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulBucketCH.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulClassicBucketCH.h"
+
 using namespace Shell;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -860,51 +863,20 @@ private:
     }
 };
 
-/**
- * MeasureDelayULTRACSAQueryPerformance
- *
- * Compares Delay-ULTRA-CSA vs Delay-ULTRA-TB vs MR on one-to-one queries,
- * using the SAME delay-tolerant shortcuts for both CSA and TB.
- *
- * The TB shortcuts are stop-event-indexed (fromStopEvent -> toStopEvent).
- * CSA needs stop-indexed transfers (fromStop -> toStop).
- * We convert by mapping each stop event to its stop and keeping
- * the minimum travel time per (fromStop, toStop) pair.
- *
- * IMPORTANT: The RAPTOR data inside queryData.tripData has IMPLICIT
- * departure buffer times (departureTime already reduced by minTransferTime).
- * Since CSA's connectionIsReachableFromStop() explicitly subtracts
- * minTransferTime, we must RESTORE the original departure times when
- * building connections to avoid double-counting the buffer.
- *
- * Required includes at the top of DelayExperiments.h:
- *
- *   #include "../../Algorithms/CSA/DelayULTRACSA.h"
- *   #include "../../DataStructures/CSA/Data.h"
- */
-
-/**
- * MeasureDelayULTRACSAQueryPerformance
- *
- * Compares Delay-ULTRA-CSA vs Delay-ULTRA-TB vs MR on one-to-one queries,
- * using the SAME delay-tolerant shortcuts for both CSA and TB.
- *
- * The TB shortcuts are stop-event-indexed (fromStopEvent -> toStopEvent).
- * CSA needs stop-indexed transfers (fromStop -> toStop).
- * We convert by mapping each stop event to its stop and keeping
- * the minimum travel time per (fromStop, toStop) pair.
- *
- * IMPORTANT: The RAPTOR data inside queryData.tripData has IMPLICIT
- * departure buffer times (departureTime already reduced by minTransferTime).
- * Since CSA's connectionIsReachableFromStop() explicitly subtracts
- * minTransferTime, we must RESTORE the original departure times when
- * building connections to avoid double-counting the buffer.
- *
- * Required includes at the top of DelayExperiments.h:
- *
- *   #include "../../Algorithms/CSA/DelayULTRACSA.h"
- *   #include "../../DataStructures/CSA/Data.h"
- */
+// =====================================================================
+//  DROP-IN REPLACEMENT for MeasureDelayULTRACSAQueryPerformance
+//
+//  Changes vs original:
+//    1. Added TAD (TimeDependentDijkstraStatefulClassicBucketCH)
+//    2. Renamed "ULTRA-RAPTOR (prune)" → "ULTRA-RAPTOR (EP)" in labels
+//    3. Made bucketCH non-const (BucketCH constructor needs mutable ptr)
+//
+//  REQUIRED INCLUDES — add these near the top of DelayExperiments.h
+//  if not already present:
+//
+//    #include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulClassicBucketCH.h"
+//    #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulClassic.h"
+// =====================================================================
 
 class MeasureDelayULTRACSAQueryPerformance : public ParameterizedCommand {
 
@@ -912,7 +884,7 @@ public:
     MeasureDelayULTRACSAQueryPerformance(BasicShell& shell) :
         ParameterizedCommand(shell, "measureDelayULTRACSAQueryPerformance",
             "Measures query performance of Delay-ULTRA-CSA, ULTRA-RAPTOR, "
-            "ULTRA-RAPTOR-prune, ULTRA-TB, MR, and TD-Dijkstra.") {
+            "ULTRA-RAPTOR (EP), ULTRA-TB, MR, TD-Dijkstra, and TAD.") {
         addParameter("Dijkstra RAPTOR data");
         addParameter("Trip-Based data");
         addParameter("Core CH data");
@@ -934,8 +906,8 @@ public:
         TripBased::DelayData delayData(getParameter("Trip-Based data"));
         delayData.printInfo();
 
-        CH::CH coreCH(getParameter("Core CH data"));
-        const CH::CH bucketCH(getParameter("Bucket CH data"));
+        CH::CH coreCH(getParameter("Core CH data"));   // needed for MR only
+        CH::CH bucketCH(getParameter("Bucket CH data"));
 
         // =================================================================
         //  2. Apply delay updates
@@ -950,7 +922,7 @@ public:
 
         // =================================================================
         //  3. Convert TB shortcuts to stop-level graph (shared by CSA,
-        //     ULTRA-RAPTOR, ULTRA-RAPTOR-prune)
+        //     ULTRA-RAPTOR, ULTRA-RAPTOR (EP))
         // =================================================================
         Intermediate::TransferGraph shortcutGraph =
             convertShortcutsToStopGraph(
@@ -1004,29 +976,43 @@ public:
         RAPTOR::ULTRARAPTOR<RAPTOR::AggregateProfiler>
             ultraRaptor(shortcutRaptorData, bucketCH);
 
-        // Prune variant needs edges sorted by travel time
-        RAPTOR::Data shortcutRaptorDataPrune = shortcutRaptorData;
-        shortcutRaptorDataPrune.sortTransferGraphEdgesByTravelTime();
+        // EP variant needs edges sorted by travel time
+        RAPTOR::Data shortcutRaptorDataEP = shortcutRaptorData;
+        shortcutRaptorDataEP.sortTransferGraphEdgesByTravelTime();
         RAPTOR::ULTRARAPTOR_prune<RAPTOR::AggregateProfiler>
-            ultraRaptorPrune(shortcutRaptorDataPrune, bucketCH);
+            ultraRaptorEP(shortcutRaptorDataEP, bucketCH);
 
         // =================================================================
-        //  8. TD-Dijkstra on delayed timetable
+        //  8. Build time-dependent graphs from delayed timetable
         // =================================================================
-        std::cout << "Building time-dependent graph from delayed timetable..."
+        std::cout << "Building time-dependent graphs from delayed timetable..."
                   << std::endl;
         Intermediate::Data delayedIntermediate =
             buildIntermediateFromRAPTOR(delayedRaptorData);
+
+        // 8a. TAD: JTS graph (no domination filtering) + BucketCH
         TimeDependentGraph tdGraph =
             TimeDependentGraph::FromIntermediate(delayedIntermediate);
-        std::cout << "Time-dependent graph created: "
+        std::cout << "TD graph created: "
                   << tdGraph.numVertices() << " vertices, "
                   << tdGraph.numEdges() << " edges" << std::endl;
 
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<
+        using TADType = TimeDependentDijkstraStatefulBucketCH<
             TimeDependentGraph, TDD::AggregateProfiler, false, true>;
-        TDDijkstraStateful tdDijkstra(
-            tdGraph, delayedRaptorData.numberOfStops(), &coreCH);
+        TADType tadAlgorithm(
+            tdGraph, delayedRaptorData.numberOfStops(), &bucketCH);
+
+        // 8b. TD-Dijkstra: Classic graph (domination filtering) + BucketCH
+        TimeDependentGraphClassic tdGraphClassic =
+            TimeDependentGraphClassic::FromIntermediate(delayedIntermediate);
+        std::cout << "Classic TD graph created: "
+                  << tdGraphClassic.numVertices() << " vertices, "
+                  << tdGraphClassic.numEdges() << " edges" << std::endl;
+
+        using TDDijkstraType = TimeDependentDijkstraStatefulClassicBucketCH<
+            TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        TDDijkstraType tdDijkstra(
+            tdGraphClassic, delayedRaptorData.numberOfStops(), &bucketCH);
 
         // =================================================================
         //  9. Generate random queries
@@ -1044,27 +1030,22 @@ public:
         const auto dijkstraResults = runQueries(queries, dijkstraRaptor);
         const double mrTime = timer.elapsedMilliseconds();
 
-        std::cout << "\n--- ULTRA-TB ---" << std::endl;
+        std::cout << "\n--- TAD (BucketCH) ---" << std::endl;
+        std::vector<int> tadResults;
+        tadResults.reserve(n);
         timer.restart();
-        const auto tbResults = runQueries(queries, ultraTripBased);
-        const double tbTime = timer.elapsedMilliseconds();
+        {
+            Progress progress(n);
+            for (size_t i = 0; i < n; ++i) {
+                const VertexQuery& q = queries[i];
+                tadAlgorithm.run(q.source, q.departureTime, q.target);
+                tadResults.push_back(tadAlgorithm.getArrivalTime(q.target));
+                progress++;
+            }
+        }
+        const double tadTime = timer.elapsedMilliseconds();
 
-        std::cout << "\n--- ULTRA-RAPTOR ---" << std::endl;
-        timer.restart();
-        const auto urResults = runQueries(queries, ultraRaptor);
-        const double urTime = timer.elapsedMilliseconds();
-
-        std::cout << "\n--- ULTRA-RAPTOR (prune) ---" << std::endl;
-        timer.restart();
-        const auto urpResults = runQueries(queries, ultraRaptorPrune);
-        const double urpTime = timer.elapsedMilliseconds();
-
-        std::cout << "\n--- Delay-ULTRA-CSA ---" << std::endl;
-        timer.restart();
-        const auto csaResults = runCSAQueries(queries, delayCSA);
-        const double csaTime = timer.elapsedMilliseconds();
-
-        std::cout << "\n--- TD-Dijkstra (stateful, CoreCH) ---" << std::endl;
+        std::cout << "\n--- TD-Dijkstra (Classic, BucketCH) ---" << std::endl;
         std::vector<int> tdResults;
         tdResults.reserve(n);
         timer.restart();
@@ -1079,6 +1060,26 @@ public:
         }
         const double tdTime = timer.elapsedMilliseconds();
 
+        std::cout << "\n--- ULTRA-TB ---" << std::endl;
+        timer.restart();
+        const auto tbResults = runQueries(queries, ultraTripBased);
+        const double tbTime = timer.elapsedMilliseconds();
+
+        std::cout << "\n--- ULTRA-RAPTOR ---" << std::endl;
+        timer.restart();
+        const auto urResults = runQueries(queries, ultraRaptor);
+        const double urTime = timer.elapsedMilliseconds();
+
+        std::cout << "\n--- ULTRA-RAPTOR (EP) ---" << std::endl;
+        timer.restart();
+        const auto urpResults = runQueries(queries, ultraRaptorEP);
+        const double urpTime = timer.elapsedMilliseconds();
+
+        std::cout << "\n--- Delay-ULTRA-CSA ---" << std::endl;
+        timer.restart();
+        const auto csaResults = runCSAQueries(queries, delayCSA);
+        const double csaTime = timer.elapsedMilliseconds();
+
         // =================================================================
         //  11. Timing summary
         // =================================================================
@@ -1086,31 +1087,34 @@ public:
         std::cout << "  Total queries:           " << n << std::endl;
         std::cout << std::fixed;
         auto printTime = [&](const char* label, double ms) {
-            std::cout << "  " << std::left << std::setw(25) << label
+            std::cout << "  " << std::left << std::setw(35) << label
                       << std::setprecision(1) << ms << " ms  ("
                       << std::setprecision(3) << (ms / n) << " ms/query)"
                       << std::endl;
         };
         printTime("MR total:", mrTime);
-        printTime("TD-Dijkstra total:", tdTime);
+        printTime("TAD total:", tadTime);
+        printTime("TD-Dijkstra (Classic) total:", tdTime);
         printTime("ULTRA-TB total:", tbTime);
         printTime("ULTRA-RAPTOR total:", urTime);
-        printTime("ULTRA-RAPTOR-P total:", urpTime);
+        printTime("ULTRA-RAPTOR (EP) total:", urpTime);
         printTime("Delay-ULTRA-CSA total:", csaTime);
 
         std::cout << std::setprecision(2);
         auto printSpeedup = [&](const char* label, double num, double den) {
             if (den > 0) {
-                std::cout << "  " << std::left << std::setw(25) << label
+                std::cout << "  " << std::left << std::setw(35) << label
                           << (num / den) << "x" << std::endl;
             }
         };
-        printSpeedup("Speedup CSA vs TB:", tbTime, csaTime);
         printSpeedup("Speedup CSA vs MR:", mrTime, csaTime);
-        printSpeedup("Speedup CSA vs TD:", tdTime, csaTime);
+        printSpeedup("Speedup CSA vs TAD:", tadTime, csaTime);
+        printSpeedup("Speedup CSA vs TD-Dijkstra:", tdTime, csaTime);
+        printSpeedup("Speedup CSA vs TB:", tbTime, csaTime);
         printSpeedup("Speedup CSA vs UR:", urTime, csaTime);
         printSpeedup("Speedup CSA vs URP:", urpTime, csaTime);
-        printSpeedup("Speedup TD vs MR:", mrTime, tdTime);
+        printSpeedup("Speedup TAD vs MR:", mrTime, tadTime);
+        printSpeedup("Speedup TD-Dijkstra vs MR:", mrTime, tdTime);
 
         // =================================================================
         //  12. Quality comparisons
@@ -1123,14 +1127,17 @@ public:
         const QueryStatistics urStats(queries, dijkstraResults, urResults);
         std::cout << urStats << std::endl;
 
-        std::cout << "=== Quality: MR vs ULTRA-RAPTOR (prune) ===" << std::endl;
+        std::cout << "=== Quality: MR vs ULTRA-RAPTOR (EP) ===" << std::endl;
         const QueryStatistics urpStats(queries, dijkstraResults, urpResults);
         std::cout << urpStats << std::endl;
 
         std::cout << "=== Quality: MR vs Delay-ULTRA-CSA ===" << std::endl;
         printCSAQuality(queries, dijkstraResults, csaResults);
 
-        std::cout << "\n=== Quality: MR vs TD-Dijkstra ===" << std::endl;
+        std::cout << "\n=== Quality: MR vs TAD ===" << std::endl;
+        printTDQuality(queries, dijkstraResults, tadResults);
+
+        std::cout << "\n=== Quality: MR vs TD-Dijkstra (Classic) ===" << std::endl;
         printTDQuality(queries, dijkstraResults, tdResults);
     }
 
@@ -1225,7 +1232,6 @@ private:
             }
         }
 
-        // CRITICAL: sort by departure time for CSA binary search
         std::sort(connections.begin(), connections.end(),
             [](const CSA::Connection& a, const CSA::Connection& b) {
                 return a.departureTime < b.departureTime;
@@ -1240,11 +1246,6 @@ private:
     // =====================================================================
     //  Build RAPTOR::Data with shortcuts-only transfer graph
     // =====================================================================
-    //  Copies the delayed RAPTOR data (routes, trips, stop events) but
-    //  replaces the transfer graph with one containing ONLY the stop-level
-    //  shortcuts. The graph has the full vertex count (for BucketCH
-    //  compatibility) but edges only between stops.
-    // =====================================================================
     inline RAPTOR::Data buildShortcutRaptorData(
             const RAPTOR::Data& raptorData,
             const Intermediate::TransferGraph& shortcutGraph) const noexcept {
@@ -1256,13 +1257,11 @@ private:
         Intermediate::TransferGraph dynGraph;
         dynGraph.addVertices(numVertices);
 
-        // Copy coordinates for all vertices
         for (Vertex v(0); v < numVertices; v++) {
             dynGraph.set(Coordinates, v,
                 raptorData.transferGraph.get(Coordinates, v));
         }
 
-        // Add only shortcut edges (shortcutGraph has numStops vertices)
         for (Vertex from(0); from < shortcutGraph.numVertices(); from++) {
             for (const Edge edge : shortcutGraph.edgesFrom(from)) {
                 const Edge ne = dynGraph.addEdge(
@@ -1274,7 +1273,6 @@ private:
 
         Graph::move(std::move(dynGraph), result.transferGraph);
 
-        // Ensure implicit departure buffer times for ULTRARAPTOR
         if (!result.hasImplicitBufferTimes()) {
             result.useImplicitDepartureBufferTimes();
         }
@@ -1283,7 +1281,7 @@ private:
     }
 
     // =====================================================================
-    //  Build Intermediate::Data from delayed RAPTOR data (for TD-Dijkstra)
+    //  Build Intermediate::Data from delayed RAPTOR data
     // =====================================================================
     inline Intermediate::Data buildIntermediateFromRAPTOR(
             const RAPTOR::Data& raptorData) const noexcept {
@@ -1431,7 +1429,7 @@ private:
     }
 
     // =====================================================================
-    //  Quality comparison (TD-Dijkstra vs MR) – scalar arrival times
+    //  Quality comparison (TAD / TD-Dijkstra vs MR) – scalar arrival times
     // =====================================================================
     inline void printTDQuality(
             const std::vector<VertexQuery>& queries,
@@ -1465,7 +1463,7 @@ private:
                 if (mismatchCount <= 5) {
                     std::cout << "  Mismatch query " << i
                               << ": MR=" << mrEarliest
-                              << ", TD=" << tdResults[i]
+                              << ", alg=" << tdResults[i]
                               << " (diff=" << diff << "s)" << std::endl;
                 }
             }
