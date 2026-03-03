@@ -3,6 +3,7 @@
 .project
 .settings/
 .vscode/
+.claude/
 cmake-build-debug/
 cmake-build-debug-wsl/
 cmake-build-release/
@@ -20,3 +21,4 @@ docs/
 readcache
 Results/
 tmp/
+CLAUDE.md
