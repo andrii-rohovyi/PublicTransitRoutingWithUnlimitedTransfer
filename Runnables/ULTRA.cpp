@@ -79,16 +79,13 @@ int main(int argc, char** argv) {
     new CheckMCRPruning(shell);
     new CompareMRwithTDStatefulNoCH(shell);
     new CompareMRwithTDStatefulCoreCH(shell);
-    new CheckTDDijkstraPruning(shell);
     new DebugSingleQuery(shell);
     new DebugExplicitQuery(shell);
     new CompareTDGraphVariants(shell);
     new CompareCSTvsClassicVariants(shell);
     new CompareBSTvsClassicVariants(shell);
     new CompareJTSvsTD(shell);
-    new CompareMCTDDvsMCR(shell);
-    new RunMCTDDQueries(shell);
-    new CheckMCTDDCorrectness(shell);
+    new ComputeDelayStopToStopShortcuts(shell);
 
     //Multiple transfer modes
     new RunMultimodalMCRQueries(shell);

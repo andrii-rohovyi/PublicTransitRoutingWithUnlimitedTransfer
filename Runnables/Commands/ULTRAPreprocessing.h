@@ -12,6 +12,7 @@
 #include "../../Algorithms/TripBased/Preprocessing/ShortcutAugmenter.h"
 #include "../../Algorithms/TripBased/Preprocessing/StopEventGraphBuilder.h"
 #include "../../Algorithms/TripBased/Preprocessing/ULTRABuilder.h"
+#include "../../Algorithms/RAPTOR/ULTRA/DelayBuilder.h"
 
 #include "../../DataStructures/Graph/Graph.h"
 #include "../../DataStructures/RAPTOR/Data.h"
@@ -741,5 +742,57 @@ public:
         TransferGraph shortcuts;
         Graph::move(std::move(stopShortcuts), shortcuts);
         validateShortcutGraph(original, shortcuts, Vertex(original.numVertices()));
+    }
+};
+
+class ComputeDelayStopToStopShortcuts : public ParameterizedCommand {
+
+public:
+    ComputeDelayStopToStopShortcuts(BasicShell& shell) :
+        ParameterizedCommand(shell, "computeDelayStopToStopShortcuts", "Computes delay-tolerant stop-to-stop transfer shortcuts using ULTRA.") {
+        addParameter("Input file");
+        addParameter("Output file");
+        addParameter("Arrival delay buffer");
+        addParameter("Departure delay buffer");
+        addParameter("Witness transfer limit", "900");
+        addParameter("Number of threads", "max");
+        addParameter("Pin multiplier", "1");
+        addParameter("Max stops (0 = all)", "0");
+    }
+
+    virtual void execute() noexcept {
+        const std::string inputFile = getParameter("Input file");
+        const std::string outputFile = getParameter("Output file");
+        const int arrivalDelayBuffer = getParameter<int>("Arrival delay buffer");
+        const int departureDelayBuffer = getParameter<int>("Departure delay buffer");
+        [[maybe_unused]] const int witnessTransferLimit = getParameter<int>("Witness transfer limit");
+        const int numberOfThreads = getNumberOfThreads();
+        const int pinMultiplier = getParameter<int>("Pin multiplier");
+        const size_t maxStops = getParameter<size_t>("Max stops (0 = all)");
+
+        RAPTOR::Data raptor(inputFile);
+        raptor.useImplicitDepartureBufferTimes();
+        raptor.printInfo();
+
+        TripBased::Data tripData(raptor);
+
+        RAPTOR::ULTRA::DelayBuilder<false> shortcutGraphBuilder(tripData);
+        std::cout << "Computing delay-tolerant stop-to-stop ULTRA shortcuts (parallel with " << numberOfThreads << " threads)." << std::endl;
+        shortcutGraphBuilder.computeShortcuts(ThreadPinning(numberOfThreads, pinMultiplier), arrivalDelayBuffer, departureDelayBuffer, witnessTransferLimit, -never, never, maxStops);
+        Graph::move(std::move(shortcutGraphBuilder.getShortcutGraph()), raptor.transferGraph);
+
+        raptor.dontUseImplicitDepartureBufferTimes();
+        Graph::printInfo(raptor.transferGraph);
+        raptor.transferGraph.printAnalysis();
+        raptor.serialize(outputFile);
+    }
+
+private:
+    inline int getNumberOfThreads() const noexcept {
+        if (getParameter("Number of threads") == "max") {
+            return numberOfCores();
+        } else {
+            return getParameter<int>("Number of threads");
+        }
     }
 };

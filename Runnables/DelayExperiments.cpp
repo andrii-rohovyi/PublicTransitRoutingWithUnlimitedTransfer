@@ -21,6 +21,8 @@ int main(int argc, char** argv) {
     new MeasureDelayULTRAQueryCoverage(shell);
     new MeasureHypotheticalDelayULTRAQueryCoverage(shell);
     new MeasureDelayULTRAQueryPerformance(shell);
+    new MeasureDelayULTRACSAQueryPerformance(shell);
+    new MeasureDelayQueryCoverage(shell);
     shell.run();
     return 0;
 }
