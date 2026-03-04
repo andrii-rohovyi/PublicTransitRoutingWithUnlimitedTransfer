@@ -2578,9 +2578,9 @@ public:
         std::vector<int> results_no_pruning;
         std::vector<int> results_pruning;
 
-        // --- Run with Target Pruning disabled (baseline) ---
-        std::cout << "\n--- Running without Target Pruning ---" << std::endl;
-        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, false, false> algorithm_no_pruning(raptorData, ch);
+        // --- Run with vertex-level Target Pruning only (baseline) ---
+        std::cout << "\n--- Running with vertex-level Target Pruning (DijkstraRAPTOR) ---" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false> algorithm_no_pruning(raptorData, ch);
         for (const VertexQuery& query : queries) {
             algorithm_no_pruning.run(query.source, query.departureTime, query.target);
             results_no_pruning.push_back(algorithm_no_pruning.getEarliestArrivalTime(query.target));
