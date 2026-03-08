@@ -10,19 +10,25 @@
 #include "../../Helpers/String/String.h"
 #include "../../DataStructures/Container/ExternalKHeap.h"
 #include "../../DataStructures/Attributes/AttributeNames.h"
-#include "../../DataStructures/Graph/TimeDependentGraphCST.h"
+#include "../../DataStructures/Graph/TimeDependentGraph.h"
+#include "../../DataStructures/Graph/TimeDependentGraphClassic.h"
 #include "../../Algorithms/CH/CH.h"
 #include "../../Algorithms/CH/Query/BucketQuery.h"
 #include "Profiler.h"
 
-template<typename GRAPH_TYPE, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
-class TimeDependentDijkstraStatefulCSTBucketCH {
+// TD-Dijkstra Classic with Bucket-CH for initial/final transfers.
+// Uses edge-by-edge relaxation (no trip scanning optimization).
+// This is the classic approach that fails on inconsistent GTFS data.
+
+template<typename GRAPH, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
+class TimeDependentDijkstraBucketCH {
 public:
-    using Graph = GRAPH_TYPE;
+    using Graph = GRAPH;
     using Profiler = PROFILER;
     static constexpr bool Debug = DEBUG;
     using BucketCHQuery = CH::BucketQuery<CHGraph, true, false>;
 
+    // --- NODE LABEL ---
     struct NodeLabel : public ExternalKHeapElement {
         NodeLabel() : ExternalKHeapElement(), arrivalTime(intMax), timeStamp(-1),
                       parent(noVertex) {}
@@ -43,18 +49,18 @@ public:
     };
 
 public:
-    TimeDependentDijkstraStatefulCSTBucketCH(const Graph& g, const size_t numStops, const CH::CH* chData)
+    TimeDependentDijkstraBucketCH(const Graph& g, const size_t numStops = 0, const CH::CH* chData = nullptr)
         : graph(g)
-        , numberOfStops(numStops)
+        , numberOfStops(numStops == 0 ? g.numVertices() : numStops)
         , Q(g.numVertices())
         , nodeLabels(g.numVertices())
         , timeStamp(0)
         , settleCount(0)
         , relaxCount(0)
-        , targetVertex(noVertex)
-        , cstSearchCount(0)
-        , regularSearchCount(0)
-        , bucketQuery(*chData, FORWARD, numberOfStops) {
+        , targetVertex(noVertex) {
+            if (chData) {
+                bucketQuery = std::make_unique<BucketCHQuery>(*chData, FORWARD, numberOfStops);
+            }
         }
 
     inline void clear() noexcept {
@@ -63,8 +69,6 @@ public:
         timeStamp++;
         settleCount = 0;
         relaxCount = 0;
-        cstSearchCount = 0;
-        regularSearchCount = 0;
         timer.restart();
         targetVertex = noVertex;
         profiler.donePhase(TDD::PHASE_CLEAR);
@@ -87,16 +91,20 @@ public:
         targetVertex = target;
 
         profiler.startPhase(TDD::PHASE_INITIALIZATION);
-        bucketQuery.run(source, target);
-        for (const Vertex stop : bucketQuery.getForwardPOIs()) {
-            const int arrivalTime = departureTime + bucketQuery.getForwardDistance(stop);
-            addSource(stop, arrivalTime);
-        }
-        if (target != noVertex) {
-            const int dist = bucketQuery.getDistance();
-            if (dist != INFTY) {
-                addSource(target, departureTime + dist);
+        if (bucketQuery) {
+            bucketQuery->run(source, target);
+            for (const Vertex stop : bucketQuery->getForwardPOIs()) {
+                const int arrivalTime = departureTime + bucketQuery->getForwardDistance(stop);
+                addSource(stop, arrivalTime);
             }
+            if (target != noVertex) {
+                const int dist = bucketQuery->getDistance();
+                if (dist != INFTY) {
+                    addSource(target, departureTime + dist);
+                }
+            }
+        } else {
+            addSource(source, departureTime);
         }
         profiler.donePhase(TDD::PHASE_INITIALIZATION);
 
@@ -121,10 +129,6 @@ public:
     inline int getRelaxCount() const noexcept { return relaxCount; }
     inline double getElapsedMilliseconds() const noexcept { return timer.elapsedMilliseconds(); }
 
-    inline const Profiler& getProfiler() const noexcept {
-        return profiler;
-    }
-
 private:
     inline NodeLabel& getNodeLabel(const Vertex v) noexcept {
         NodeLabel& L = nodeLabels[v];
@@ -138,7 +142,6 @@ private:
 
         while (!Q.empty()) {
             const NodeLabel* cur = Q.extractFront();
-
             const Vertex u = Vertex(cur - nodeLabels.data());
             const int t = cur->arrivalTime;
 
@@ -161,99 +164,26 @@ private:
 
             if (stop()) break;
 
-            // 1. Bucket-CH Backward
-            if (targetVertex != noVertex && u < numberOfStops) {
-                const int backwardDist = bucketQuery.getBackwardDistance(u);
+            // Bucket-CH backward search for target
+            if (targetVertex != noVertex && bucketQuery && u < numberOfStops) {
+                const int backwardDist = bucketQuery->getBackwardDistance(u);
                 if (backwardDist != INFTY) {
                     const int arrivalAtTarget = t + backwardDist;
                     relaxEdge(targetVertex, u, arrivalAtTarget);
                 }
             }
 
-            // 2. Scan edges - use CST if available
-            if (graph.hasCSTData(u)) {
-                relaxEdgesWithCST(u, t);
-            } else {
-                relaxEdgesRegular(u, t);
-            }
-        }
-        profiler.donePhase(TDD::PHASE_MAIN_LOOP);
-    }
+            // Scan edges - edge-by-edge (no trip scanning)
+            for (const Edge e : graph.edgesFrom(u)) {
+                const Vertex v = graph.get(ToVertex, e);
+                const int arrivalAtV = graph.getArrivalTime(e, t);
 
-    inline void relaxEdgesWithCST(const Vertex u, const int departureTime) noexcept {
-        cstSearchCount++;
-
-        const CombinedSearchTreeData& cst = graph.getCSTData(u);
-
-        if (cst.schedule.empty()) return;
-
-        int schedIdx = cst.bisectLeft(departureTime);
-
-        if (schedIdx >= 0 && (size_t)schedIdx < cst.positionInEdge.size()) {
-            const auto& startIndices = cst.positionInEdge[schedIdx];
-
-            for (size_t edgeIdx = 0; edgeIdx < cst.edges.size(); ++edgeIdx) {
-                const Edge e = cst.edges[edgeIdx];
-                const Vertex v = cst.targets[edgeIdx];
-                const int startIndex = startIndices[edgeIdx];
-
-                relaxEdgeWithStartIndex(e, v, u, departureTime, startIndex);
-            }
-        } else {
-            for (size_t edgeIdx = 0; edgeIdx < cst.edges.size(); ++edgeIdx) {
-                const Edge e = cst.edges[edgeIdx];
-                const Vertex v = cst.targets[edgeIdx];
-                const EdgeTripsHandle& h = graph.get(Function, e);
-                if (h.walkTime != never) {
-                    int walkArrival = departureTime + h.walkTime;
-                    relaxEdge(v, u, walkArrival);
+                if (arrivalAtV < never) {
+                    relaxEdge(v, u, arrivalAtV);
                 }
             }
         }
-
-        for (size_t i = 0; i < cst.walkingEdges.size(); ++i) {
-            const Edge e = cst.walkingEdges[i];
-            const Vertex v = cst.walkingTargets[i];
-
-            const int arrivalAtV = graph.getWalkArrivalFrom(e, departureTime);
-            if (arrivalAtV < never) {
-                relaxEdge(v, u, arrivalAtV);
-            }
-        }
-    }
-
-    inline void relaxEdgeWithStartIndex(const Edge e, const Vertex v, const Vertex parent,
-                                         const int departureTime, const int startIndex) noexcept {
-        const EdgeTripsHandle& h = graph.get(Function, e);
-
-        int bestArrival = never;
-
-        if (startIndex >= 0 && (uint32_t)startIndex < h.tripCount) {
-            const int* suffixMin = graph.getSuffixMinBegin(h);
-            bestArrival = suffixMin[startIndex];
-        }
-
-        if (h.walkTime != never) {
-            int walkArrival = departureTime + h.walkTime;
-            bestArrival = std::min(bestArrival, walkArrival);
-        }
-
-        if (bestArrival < never) {
-            relaxEdge(v, parent, bestArrival);
-        }
-    }
-
-    inline void relaxEdgesRegular(const Vertex u, const int departureTime) noexcept {
-        regularSearchCount++;
-
-        for (const Edge e : graph.edgesFrom(u)) {
-            const Vertex v = graph.get(ToVertex, e);
-            const int arrivalAtV = graph.getWalkArrivalFrom(e, departureTime);
-
-            if (arrivalAtV < never) {
-                relaxEdge(v, u, arrivalAtV);
-            }
-        }
+        profiler.donePhase(TDD::PHASE_MAIN_LOOP);
     }
 
     inline void relaxEdge(const Vertex v, const Vertex parent, const int newTime) noexcept {
@@ -269,18 +199,23 @@ private:
         }
     }
 
+public:
+    inline const Profiler& getProfiler() const noexcept {
+        return profiler;
+    }
+
 private:
     const Graph& graph;
     const size_t numberOfStops;
     ExternalKHeap<2, NodeLabel> Q;
+
     std::vector<NodeLabel> nodeLabels;
+
     int timeStamp;
     int settleCount;
     int relaxCount;
     Timer timer;
+    std::unique_ptr<BucketCHQuery> bucketQuery;
     Vertex targetVertex;
     Profiler profiler;
-    size_t cstSearchCount;
-    size_t regularSearchCount;
-    BucketCHQuery bucketQuery;
 };

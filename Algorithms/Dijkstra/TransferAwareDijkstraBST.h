@@ -10,15 +10,15 @@
 #include "../../Helpers/String/String.h"
 #include "../../DataStructures/Container/ExternalKHeap.h"
 #include "../../DataStructures/Attributes/AttributeNames.h"
-#include "../../DataStructures/Graph/TimeDependentGraphCST.h"
+#include "../../DataStructures/Graph/TimeDependentGraphBST.h"
 #include "../../Algorithms/CH/CH.h"
 #include "../../Algorithms/CH/Query/CHQuery.h"
 #include "Profiler.h"
 
 template<typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
-class TimeDependentDijkstraStatefulCST {
+class TransferAwareDijkstraBST {
 public:
-    using Graph = TimeDependentGraphCST;
+    using Graph = TimeDependentGraphBST;
     using Profiler = PROFILER;
     static constexpr bool Debug = DEBUG;
     using CoreCHInitialTransfers = CH::Query<CHGraph, true, false, true>;
@@ -43,7 +43,7 @@ public:
     };
 
 public:
-    TimeDependentDijkstraStatefulCST(const Graph& g, const size_t numStops = 0, const CH::CH* chData = nullptr)
+    TransferAwareDijkstraBST(const Graph& g, const size_t numStops = 0, const CH::CH* chData = nullptr)
         : graph(g)
         , numberOfStops(numStops == 0 ? g.numVertices() : numStops)
         , Q(g.numVertices())
@@ -52,7 +52,7 @@ public:
         , settleCount(0)
         , relaxCount(0)
         , targetVertex(noVertex)
-        , cstSearchCount(0)
+        , bstSearchCount(0)
         , regularSearchCount(0) {
             if (chData) {
                 initialTransfers = std::make_unique<CoreCHInitialTransfers>(*chData, FORWARD, numberOfStops);
@@ -65,7 +65,7 @@ public:
         timeStamp++;
         settleCount = 0;
         relaxCount = 0;
-        cstSearchCount = 0;
+        bstSearchCount = 0;
         regularSearchCount = 0;
         timer.restart();
         targetVertex = noVertex;
@@ -148,12 +148,12 @@ public:
         return path;
     }
 
-    inline void printCSTStatistics() const noexcept {
-        std::cout << "CST searches: " << cstSearchCount << std::endl;
+    inline void printBSTStatistics() const noexcept {
+        std::cout << "BST searches: " << bstSearchCount << std::endl;
         std::cout << "Regular searches: " << regularSearchCount << std::endl;
-        if (cstSearchCount + regularSearchCount > 0) {
-            double cstPercent = 100.0 * cstSearchCount / (cstSearchCount + regularSearchCount);
-            std::cout << "CST usage: " << cstPercent << "%" << std::endl;
+        if (bstSearchCount + regularSearchCount > 0) {
+            double bstPercent = 100.0 * bstSearchCount / (bstSearchCount + regularSearchCount);
+            std::cout << "BST usage: " << bstPercent << "%" << std::endl;
         }
     }
 
@@ -202,9 +202,9 @@ private:
                 }
             }
 
-            // 2. Scan edges - use CST if available
-            if (graph.hasCSTData(u)) {
-                relaxEdgesWithCST(u, t);
+            // 2. Scan edges - use BST if available
+            if (graph.hasBSTData(u)) {
+                relaxEdgesWithBST(u, t);
             } else {
                 relaxEdgesRegular(u, t);
             }
@@ -212,36 +212,35 @@ private:
         profiler.donePhase(TDD::PHASE_MAIN_LOOP);
     }
 
-    // [COMBINED SEARCH TREE] Optimized edge relaxation
-    // ONE binary search on schedule, then O(1) lookup per edge
-    inline void relaxEdgesWithCST(const Vertex u, const int departureTime) noexcept {
-        cstSearchCount++;
+    // [BALANCED SEARCH TREE] Optimized edge relaxation
+    // ONE tree lookup (lower_bound), then O(1) lookup per edge
+    inline void relaxEdgesWithBST(const Vertex u, const int departureTime) noexcept {
+        bstSearchCount++;
 
-        const CombinedSearchTreeData& cst = graph.getCSTData(u);
+        const BalancedSearchTreeData& bst = graph.getBSTData(u);
 
-        if (cst.schedule.empty()) return;
+        if (bst.empty()) return;
 
-        // ONE binary search to find position in schedule
-        int schedIdx = cst.bisectLeft(departureTime);
+        // ONE tree lookup to find the entry with departure >= departureTime
+        auto it = bst.bisectLeft(departureTime);
 
         // Process all edges with trips
-        if (schedIdx >= 0 && (size_t)schedIdx < cst.positionInEdge.size()) {
-            const auto& startIndices = cst.positionInEdge[schedIdx];
+        if (it != bst.tree.end()) {
+            const std::vector<int>& startIndices = it->second;
 
-            for (size_t edgeIdx = 0; edgeIdx < cst.edges.size(); ++edgeIdx) {
-                const Edge e = cst.edges[edgeIdx];
-                const Vertex v = cst.targets[edgeIdx];
+            for (size_t edgeIdx = 0; edgeIdx < bst.edges.size(); ++edgeIdx) {
+                const Edge e = bst.edges[edgeIdx];
+                const Vertex v = bst.targets[edgeIdx];
                 const int startIndex = startIndices[edgeIdx];
 
                 relaxEdgeWithStartIndex(e, v, u, departureTime, startIndex);
             }
         } else {
-            // No valid schedule entry, but still check walking edges
-            // For edges with trips, if schedIdx == -1, no valid bus departure
-            for (size_t edgeIdx = 0; edgeIdx < cst.edges.size(); ++edgeIdx) {
-                const Edge e = cst.edges[edgeIdx];
-                const Vertex v = cst.targets[edgeIdx];
-                // Only walk time (startIndex beyond all trips)
+            // No valid tree entry found (departure time after all trips)
+            // Only check walking edges
+            for (size_t edgeIdx = 0; edgeIdx < bst.edges.size(); ++edgeIdx) {
+                const Edge e = bst.edges[edgeIdx];
+                const Vertex v = bst.targets[edgeIdx];
                 const EdgeTripsHandle& h = graph.get(Function, e);
                 if (h.walkTime != never) {
                     int walkArrival = departureTime + h.walkTime;
@@ -251,9 +250,9 @@ private:
         }
 
         // Process walking-only edges
-        for (size_t i = 0; i < cst.walkingEdges.size(); ++i) {
-            const Edge e = cst.walkingEdges[i];
-            const Vertex v = cst.walkingTargets[i];
+        for (size_t i = 0; i < bst.walkingEdges.size(); ++i) {
+            const Edge e = bst.walkingEdges[i];
+            const Vertex v = bst.walkingTargets[i];
 
             const int arrivalAtV = graph.getWalkArrivalFrom(e, departureTime);
             if (arrivalAtV < never) {
@@ -262,7 +261,7 @@ private:
         }
     }
 
-    // Relax edge using the pre-computed startIndex from CST
+    // Relax edge using the pre-computed startIndex from BST
     inline void relaxEdgeWithStartIndex(const Edge e, const Vertex v, const Vertex parent,
                                          const int departureTime, const int startIndex) noexcept {
         const EdgeTripsHandle& h = graph.get(Function, e);
@@ -286,7 +285,7 @@ private:
         }
     }
 
-    // Standard edge relaxation (when no CST data available)
+    // Standard edge relaxation (when no BST data available)
     inline void relaxEdgesRegular(const Vertex u, const int departureTime) noexcept {
         regularSearchCount++;
 
@@ -333,6 +332,6 @@ private:
     Vertex targetVertex;
     Profiler profiler;
 
-    size_t cstSearchCount;
+    size_t bstSearchCount;
     size_t regularSearchCount;
 };

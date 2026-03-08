@@ -12,16 +12,16 @@
 #include "../../DataStructures/Attributes/AttributeNames.h"
 #include "../../DataStructures/Graph/TimeDependentGraphFC.h"
 #include "../../Algorithms/CH/CH.h"
-#include "../../Algorithms/CH/Query/BucketQuery.h"
+#include "../../Algorithms/CH/Query/CHQuery.h"
 #include "Profiler.h"
 
-template<typename GRAPH_TYPE, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
-class TimeDependentDijkstraStatefulFCBucketCH {
+template<typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
+class TransferAwareDijkstraFC {
 public:
-    using Graph = GRAPH_TYPE;
+    using Graph = TimeDependentGraphFC;
     using Profiler = PROFILER;
     static constexpr bool Debug = DEBUG;
-    using BucketCHQuery = CH::BucketQuery<CHGraph, true, false>;
+    using CoreCHInitialTransfers = CH::Query<CHGraph, true, false, true>;
 
     struct NodeLabel : public ExternalKHeapElement {
         NodeLabel() : ExternalKHeapElement(), arrivalTime(intMax), timeStamp(-1),
@@ -43,9 +43,9 @@ public:
     };
 
 public:
-    TimeDependentDijkstraStatefulFCBucketCH(const Graph& g, const size_t numStops, const CH::CH* chData)
+    TransferAwareDijkstraFC(const Graph& g, const size_t numStops = 0, const CH::CH* chData = nullptr)
         : graph(g)
-        , numberOfStops(numStops)
+        , numberOfStops(numStops == 0 ? g.numVertices() : numStops)
         , Q(g.numVertices())
         , nodeLabels(g.numVertices())
         , timeStamp(0)
@@ -53,8 +53,10 @@ public:
         , relaxCount(0)
         , targetVertex(noVertex)
         , fcSearchCount(0)
-        , regularSearchCount(0)
-        , bucketQuery(*chData, FORWARD, numberOfStops) {
+        , regularSearchCount(0) {
+            if (chData) {
+                initialTransfers = std::make_unique<CoreCHInitialTransfers>(*chData, FORWARD, numberOfStops);
+            }
         }
 
     inline void clear() noexcept {
@@ -87,17 +89,20 @@ public:
         targetVertex = target;
 
         profiler.startPhase(TDD::PHASE_INITIALIZATION);
-        // Use Bucket-CH for initial transfers
-        bucketQuery.run(source, target);
-        for (const Vertex stop : bucketQuery.getForwardPOIs()) {
-            const int arrivalTime = departureTime + bucketQuery.getForwardDistance(stop);
-            addSource(stop, arrivalTime);
-        }
-        if (target != noVertex) {
-            const int dist = bucketQuery.getDistance();
-            if (dist != INFTY) {
-                addSource(target, departureTime + dist);
+        if (initialTransfers) {
+            initialTransfers->run(source, target);
+            for (const Vertex stop : initialTransfers->getForwardPOIs()) {
+                const int arrivalTime = departureTime + initialTransfers->getForwardDistance(stop);
+                addSource(stop, arrivalTime);
             }
+            if (target != noVertex) {
+                const int dist = initialTransfers->getDistance();
+                if (dist != INFTY) {
+                    addSource(target, departureTime + dist);
+                }
+            }
+        } else {
+            addSource(source, departureTime);
         }
         profiler.donePhase(TDD::PHASE_INITIALIZATION);
 
@@ -122,8 +127,34 @@ public:
     inline int getRelaxCount() const noexcept { return relaxCount; }
     inline double getElapsedMilliseconds() const noexcept { return timer.elapsedMilliseconds(); }
 
-    inline const Profiler& getProfiler() const noexcept {
-        return profiler;
+    struct PathEntry {
+        Vertex vertex;
+        int arrivalTime;
+    };
+
+    inline std::vector<PathEntry> getPath(const Vertex target) const noexcept {
+        std::vector<PathEntry> path;
+        if (!reachable(target)) return path;
+
+        Vertex curVertex = target;
+
+        while (curVertex != noVertex) {
+            const NodeLabel& L = nodeLabels[curVertex];
+            path.push_back({curVertex, L.arrivalTime});
+            curVertex = L.parent;
+        }
+
+        std::reverse(path.begin(), path.end());
+        return path;
+    }
+
+    inline void printFCStatistics() const noexcept {
+        std::cout << "FC searches: " << fcSearchCount << std::endl;
+        std::cout << "Regular searches: " << regularSearchCount << std::endl;
+        if (fcSearchCount + regularSearchCount > 0) {
+            double fcPercent = 100.0 * fcSearchCount / (fcSearchCount + regularSearchCount);
+            std::cout << "FC usage: " << fcPercent << "%" << std::endl;
+        }
     }
 
 private:
@@ -162,9 +193,9 @@ private:
 
             if (stop()) break;
 
-            // 1. Bucket-CH Backward (scan buckets)
-            if (targetVertex != noVertex && u < numberOfStops) {
-                const int backwardDist = bucketQuery.getBackwardDistance(u);
+            // 1. CoreCH Backward (if enabled)
+            if (targetVertex != noVertex && initialTransfers && u < numberOfStops) {
+                const int backwardDist = initialTransfers->getBackwardDistance(u);
                 if (backwardDist != INFTY) {
                     const int arrivalAtTarget = t + backwardDist;
                     relaxEdge(targetVertex, u, arrivalAtTarget);
@@ -181,6 +212,8 @@ private:
         profiler.donePhase(TDD::PHASE_MAIN_LOOP);
     }
 
+    // [FRACTIONAL CASCADING] Optimized edge relaxation
+    // Based on Python: get_positions_fractional_cascading + Dijkstra loop
     inline void relaxEdgesWithFC(const Vertex u, const int departureTime) noexcept {
         fcSearchCount++;
 
@@ -190,24 +223,34 @@ private:
 
         const size_t numLevels = fc.m_arr.size();
 
+        // ONE binary search on the first cascaded array
         int loc = fc.bisectLeft(departureTime);
 
+        // Bounds check for first level
         if (loc >= (int)fc.pointers[0].size()) {
             loc = (int)fc.pointers[0].size() - 1;
         }
         if (loc < 0) loc = 0;
 
+        // Get pointer for level 0
         const FCPointer& ptr0 = fc.pointers[0][loc];
+
+        // Relax edge at level 0
         relaxEdgeWithStartIndex(fc.reachableEdges[0], fc.reachableNodes[0], u, departureTime, ptr0.startIndex);
 
         int nextLoc = ptr0.nextLoc;
 
+        // Cascade through remaining levels - O(1) per level
         for (size_t i = 1; i < numLevels; ++i) {
+            // Bounds check
             if (nextLoc >= (int)fc.m_arr[i].size()) {
                 nextLoc = (int)fc.m_arr[i].size() - 1;
             }
             if (nextLoc < 0) nextLoc = 0;
 
+            // Python logic: choose pointer based on comparison
+            // if winner_weight <= m_arr[i][next_loc - 1]: use next_loc - 1
+            // else: use next_loc
             int ptrIndex;
             if (nextLoc > 0 && departureTime <= fc.m_arr[i][nextLoc - 1]) {
                 ptrIndex = nextLoc - 1;
@@ -215,17 +258,21 @@ private:
                 ptrIndex = nextLoc;
             }
 
+            // Bounds check for pointer index
             if (ptrIndex >= (int)fc.pointers[i].size()) {
                 ptrIndex = (int)fc.pointers[i].size() - 1;
             }
             if (ptrIndex < 0) ptrIndex = 0;
 
             const FCPointer& ptr_i = fc.pointers[i][ptrIndex];
+
+            // Relax edge at level i
             relaxEdgeWithStartIndex(fc.reachableEdges[i], fc.reachableNodes[i], u, departureTime, ptr_i.startIndex);
 
             nextLoc = ptr_i.nextLoc;
         }
 
+        // Process walking-only edges (no FC needed, just walk time)
         for (size_t i = 0; i < fc.walkingEdges.size(); ++i) {
             const Edge e = fc.walkingEdges[i];
             const Vertex v = fc.walkingNodes[i];
@@ -237,17 +284,21 @@ private:
         }
     }
 
+    // Relax edge using the pre-computed startIndex from FC
+    // startIndex points directly into the edge's trip array
     inline void relaxEdgeWithStartIndex(const Edge e, const Vertex v, const Vertex parent,
                                          const int departureTime, const int startIndex) noexcept {
         const EdgeTripsHandle& h = graph.get(Function, e);
 
         int bestArrival = never;
 
+        // Use suffix minimum for O(1) best arrival lookup
         if (startIndex >= 0 && (uint32_t)startIndex < h.tripCount) {
             const int* suffixMin = graph.getSuffixMinBegin(h);
             bestArrival = suffixMin[startIndex];
         }
 
+        // Check walking option
         if (h.walkTime != never) {
             int walkArrival = departureTime + h.walkTime;
             bestArrival = std::min(bestArrival, walkArrival);
@@ -258,6 +309,7 @@ private:
         }
     }
 
+    // Standard edge relaxation (when no FC data available)
     inline void relaxEdgesRegular(const Vertex u, const int departureTime) noexcept {
         regularSearchCount++;
 
@@ -284,18 +336,26 @@ private:
         }
     }
 
+public:
+    inline const Profiler& getProfiler() const noexcept {
+        return profiler;
+    }
+
 private:
     const Graph& graph;
     const size_t numberOfStops;
     ExternalKHeap<2, NodeLabel> Q;
+
     std::vector<NodeLabel> nodeLabels;
+
     int timeStamp;
     int settleCount;
     int relaxCount;
     Timer timer;
+    std::unique_ptr<CoreCHInitialTransfers> initialTransfers;
     Vertex targetVertex;
     Profiler profiler;
+
     size_t fcSearchCount;
     size_t regularSearchCount;
-    BucketCHQuery bucketQuery;
 };

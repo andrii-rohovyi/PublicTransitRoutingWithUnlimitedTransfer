@@ -11,7 +11,7 @@ using namespace Shell;
 
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
-#include "../../Algorithms/Dijkstra/TD-DijkstraStateful.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstra.h"
 #include "../../DataStructures/RAPTOR/Data.h"
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../DataStructures/Intermediate/Data.h"
@@ -100,7 +100,7 @@ public:
 
         // Run TD-Dijkstra (stateful)
         std::cout << "\n=== Running TD-Dijkstra (Stateful) with CoreCH ===" << std::endl;
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, true>;
+        using TDDijkstraStateful = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, true>;
         // Use CoreCH for initial transfers (matching MR semantics)
         TDDijkstraStateful algorithmTD(graph, raptorData.numberOfStops(), &ch);
         
@@ -244,7 +244,7 @@ public:
 
         // Run TD-Dijkstra (stateful)
         std::cout << "\n=== Running TD-Dijkstra (Stateful) with CoreCH ===" << std::endl;
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, true>;
+        using TDDijkstraStateful = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, true>;
         TDDijkstraStateful algorithmTD(graph, raptorData.numberOfStops(), &ch);
         
         algorithmTD.run(source, departureTime, target);

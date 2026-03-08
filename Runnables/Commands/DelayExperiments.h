@@ -16,7 +16,7 @@
 #include "../../DataStructures/TripBased/DelayUpdateData.h"
 #include "../../Algorithms/CSA/DelayULTRACSA.h"
 #include "../../DataStructures/CSA/Data.h"
-#include "../../Algorithms/Dijkstra/TD-DijkstraStateful.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstra.h"
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../DataStructures/Intermediate/Data.h"
 #include "../../Algorithms/RAPTOR/ULTRARAPTOR.h"
@@ -35,8 +35,8 @@
 #include "../../DataStructures/CSA/Data.h"
 #include "../../Algorithms/CSA/ULTRACSA.h"
 
-#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulBucketCH.h"
-#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulClassicBucketCH.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstraBucketCH.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraBucketCH.h"
 
 using namespace Shell;
 
@@ -1304,15 +1304,15 @@ public:
 //  DROP-IN REPLACEMENT for MeasureDelayULTRACSAQueryPerformance
 //
 //  Changes vs original:
-//    1. Added TAD (TimeDependentDijkstraStatefulClassicBucketCH)
+//    1. Added TAD (TimeDependentDijkstraBucketCH)
 //    2. Renamed "ULTRA-RAPTOR (prune)" → "ULTRA-RAPTOR (EP)" in labels
 //    3. Made bucketCH non-const (BucketCH constructor needs mutable ptr)
 //
 //  REQUIRED INCLUDES — add these near the top of DelayExperiments.h
 //  if not already present:
 //
-//    #include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulClassicBucketCH.h"
-//    #include "../../Algorithms/Dijkstra/TD-DijkstraStatefulClassic.h"
+//    #include "../../Algorithms/Dijkstra/TimeDependentDijkstraBucketCH.h"
+//    #include "../../Algorithms/Dijkstra/TimeDependentDijkstra.h"
 // =====================================================================
 
 class MeasureDelayULTRACSAQueryPerformance : public ParameterizedCommand {
@@ -1434,7 +1434,7 @@ public:
                   << tdGraph.numVertices() << " vertices, "
                   << tdGraph.numEdges() << " edges" << std::endl;
 
-        using TADType = TimeDependentDijkstraStatefulBucketCH<
+        using TADType = TransferAwareDijkstraBucketCH<
             TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         TADType tadAlgorithm(
             tdGraph, delayedRaptorData.numberOfStops(), &bucketCH);
@@ -1446,7 +1446,7 @@ public:
                   << tdGraphClassic.numVertices() << " vertices, "
                   << tdGraphClassic.numEdges() << " edges" << std::endl;
 
-        using TDDijkstraType = TimeDependentDijkstraStatefulClassicBucketCH<
+        using TDDijkstraType = TimeDependentDijkstraBucketCH<
             TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDDijkstraType tdDijkstra(
             tdGraphClassic, delayedRaptorData.numberOfStops(), &bucketCH);

@@ -13,17 +13,17 @@ using namespace Shell;
 #include "../../Algorithms/CSA/ULTRACSA.h"
 #include "../../Algorithms/RAPTOR/HLRAPTOR.h"
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
-#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulBucketCH.h"
-#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulBSTBucketCH.h"
-#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulCSTBucketCH.h"
-#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulFCBucketCH.h"
-#include "../../Algorithms/Dijkstra/TimeDependentDijkstraStatefulClassicBucketCH.h"
-#include "../../Algorithms/Dijkstra/TD-DijkstraStateful.h"
-#include "../../Algorithms/Dijkstra/TD-DijkstraStatefulClassic.h"
-#include "../../Algorithms/Dijkstra/TD-DijkstraStatefulFC.h"
-#include "../../Algorithms/Dijkstra/TD-DijkstraStatefulCST.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstraBucketCH.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstraBSTBucketCH.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstraCSTBucketCH.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstraFCBucketCH.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstraBucketCH.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstra.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstra.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstraFC.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstraCST.h"
 #include "../../Algorithms/Dijkstra/JumpTripSearch.h"
-#include "../../Algorithms/Dijkstra/TD-DijkstraStatefulBST.h"
+#include "../../Algorithms/Dijkstra/TransferAwareDijkstraBST.h"
 
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/RAPTOR/RAPTOR.h"
@@ -213,7 +213,7 @@ public:
         std::cout << "  2. TD-Dijkstra Classic with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
-        using TDClassicCoreCH = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        using TDClassicCoreCH = TimeDependentDijkstra<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDClassicCoreCH algorithm_td_classic_corech(tdGraphClassic, raptorData.numberOfStops(), &coreCH);
 
         Timer tdClassicCoreCHTimer;
@@ -236,7 +236,7 @@ public:
 
         std::cout << "Building Bucket-CH for TD Classic..." << std::endl;
         Timer bucketClassicBuildTimer;
-        using TDClassicBucketCH = TimeDependentDijkstraStatefulClassicBucketCH<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        using TDClassicBucketCH = TimeDependentDijkstraBucketCH<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDClassicBucketCH algorithm_td_classic_bucketch(tdGraphClassic, raptorData.numberOfStops(), &fullCH);
         bucketClassicBuildTime = bucketClassicBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketClassicBuildTime) << std::endl;
@@ -259,7 +259,7 @@ public:
         std::cout << "  4. JTS with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
-        using JTSCoreCH = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        using JTSCoreCH = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         JTSCoreCH algorithm_jts_corech(tdGraph, raptorData.numberOfStops(), &coreCH);
 
         Timer jtsCoreCHTimer;
@@ -282,7 +282,7 @@ public:
 
         std::cout << "Building Bucket-CH for JTS..." << std::endl;
         Timer bucketJTSBuildTimer;
-        using JTSBucketCH = TimeDependentDijkstraStatefulBucketCH<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        using JTSBucketCH = TransferAwareDijkstraBucketCH<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         JTSBucketCH algorithm_jts_bucketch(tdGraph, raptorData.numberOfStops(), &fullCH);
         bucketJTSBuildTime = bucketJTSBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketJTSBuildTime) << std::endl;
@@ -305,7 +305,7 @@ public:
         std::cout << "  6. TTN-FC with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
-        using FCCoreCH = TimeDependentDijkstraStatefulFC<TDD::AggregateProfiler, false, true>;
+        using FCCoreCH = TransferAwareDijkstraFC<TDD::AggregateProfiler, false, true>;
         FCCoreCH algorithm_fc_corech(tdGraphFC, raptorData.numberOfStops(), &coreCH);
 
         Timer fcCoreCHTimer;
@@ -328,7 +328,7 @@ public:
 
         std::cout << "Building Bucket-CH for TTN-FC..." << std::endl;
         Timer bucketFCBuildTimer;
-        using FCBucketCH = TimeDependentDijkstraStatefulFCBucketCH<TimeDependentGraphFC, TDD::AggregateProfiler, false, true>;
+        using FCBucketCH = TransferAwareDijkstraFCBucketCH<TimeDependentGraphFC, TDD::AggregateProfiler, false, true>;
         FCBucketCH algorithm_fc_bucketch(tdGraphFC, raptorData.numberOfStops(), &fullCH);
         bucketFCBuildTime = bucketFCBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketFCBuildTime) << std::endl;
@@ -351,7 +351,7 @@ public:
         std::cout << "  8. TTN-CST with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
-        using CSTCoreCH = TimeDependentDijkstraStatefulCST<TDD::AggregateProfiler, false, true>;
+        using CSTCoreCH = TransferAwareDijkstraCST<TDD::AggregateProfiler, false, true>;
         CSTCoreCH algorithm_cst_corech(tdGraphCST, raptorData.numberOfStops(), &coreCH);
 
         Timer cstCoreCHTimer;
@@ -374,7 +374,7 @@ public:
 
         std::cout << "Building Bucket-CH for TTN-CST..." << std::endl;
         Timer bucketCSTBuildTimer;
-        using CSTBucketCH = TimeDependentDijkstraStatefulCSTBucketCH<TimeDependentGraphCST, TDD::AggregateProfiler, false, true>;
+        using CSTBucketCH = TransferAwareDijkstraCSTBucketCH<TimeDependentGraphCST, TDD::AggregateProfiler, false, true>;
         CSTBucketCH algorithm_cst_bucketch(tdGraphCST, raptorData.numberOfStops(), &fullCH);
         bucketCSTBuildTime = bucketCSTBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketCSTBuildTime) << std::endl;
@@ -397,7 +397,7 @@ public:
         std::cout << "  10. TTN-BST with Core-CH" << std::endl;
         std::cout << "========================================\n" << std::endl;
 
-        using BSTCoreCH = TimeDependentDijkstraStatefulBST<TDD::AggregateProfiler, false, true>;
+        using BSTCoreCH = TransferAwareDijkstraBST<TDD::AggregateProfiler, false, true>;
         BSTCoreCH algorithm_bst_corech(tdGraphBST, raptorData.numberOfStops(), &coreCH);
 
         Timer bstCoreCHTimer;
@@ -420,7 +420,7 @@ public:
 
         std::cout << "Building Bucket-CH for TTN-BST..." << std::endl;
         Timer bucketBSTBuildTimer;
-        using BSTBucketCH = TimeDependentDijkstraStatefulBSTBucketCH<TimeDependentGraphBST, TDD::AggregateProfiler, false, true>;
+        using BSTBucketCH = TransferAwareDijkstraBSTBucketCH<TimeDependentGraphBST, TDD::AggregateProfiler, false, true>;
         BSTBucketCH algorithm_bst_bucketch(tdGraphBST, raptorData.numberOfStops(), &fullCH);
         bucketBSTBuildTime = bucketBSTBuildTimer.elapsedMilliseconds();
         std::cout << "Bucket-CH preprocessing time: " << String::msToString(bucketBSTBuildTime) << std::endl;
@@ -707,7 +707,7 @@ class CompareBSTvsClassicVariants : public ParameterizedCommand {
 public:
     CompareBSTvsClassicVariants(BasicShell& shell) :
         ParameterizedCommand(shell, "compareBSTvsClassicVariants",
-            "Compares TimeDependentDijkstraStatefulBST (Balanced Search Trees) vs TimeDependentDijkstraStatefulClassic (standard binary search).") {
+            "Compares TransferAwareDijkstraBST (Balanced Search Trees) vs TimeDependentDijkstra (standard binary search).") {
         addParameter("Intermediate input file");
         addParameter("Core CH input file");
         addParameter("Number of queries");
@@ -768,7 +768,7 @@ public:
         // --- Run Classic Dijkstra ---
         std::cout << "\n=== Running TD-Dijkstra (Classic - Standard Binary Search) ===" << std::endl;
 
-        using TDDijkstraClassic = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        using TDDijkstraClassic = TimeDependentDijkstra<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDDijkstraClassic algorithmClassic(graphClassic, intermediateData.numberOfStops(), &ch);
 
         Timer classicTimer;
@@ -790,7 +790,7 @@ public:
         // --- Run BST Dijkstra ---
         std::cout << "\n=== Running TD-Dijkstra (BST - Balanced Search Trees) ===" << std::endl;
 
-        using TDDijkstraBST = TimeDependentDijkstraStatefulBST<TDD::AggregateProfiler, false, true>;
+        using TDDijkstraBST = TransferAwareDijkstraBST<TDD::AggregateProfiler, false, true>;
         TDDijkstraBST algorithmBST(graphBST, intermediateData.numberOfStops(), &ch);
 
         Timer bstTimer;
@@ -935,7 +935,7 @@ class CompareJTSvsTD : public ParameterizedCommand {
 public:
     CompareJTSvsTD(BasicShell& shell) :
         ParameterizedCommand(shell, "compareJTSvsTD",
-            "Compares JumpTripSearch on JTSGraph vs TimeDependentDijkstraStateful on TimeDependentGraph.") {
+            "Compares JumpTripSearch on JTSGraph vs TransferAwareDijkstra on TimeDependentGraph.") {
         addParameter("Intermediate input file");
         addParameter("Core CH input file");
         addParameter("Number of queries");
@@ -994,10 +994,10 @@ public:
         resultsTD.reserve(n);
         resultsJTS.reserve(n);
 
-        // --- Run TimeDependentDijkstraStateful on TimeDependentGraph ---
-        std::cout << "\n=== Running TimeDependentDijkstraStateful on TimeDependentGraph ===" << std::endl;
+        // --- Run TransferAwareDijkstra on TimeDependentGraph ---
+        std::cout << "\n=== Running TransferAwareDijkstra on TimeDependentGraph ===" << std::endl;
 
-        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        using TDDijkstra = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         TDDijkstra algorithmTD(graphTD, intermediateData.numberOfStops(), &ch);
 
         long long totalTDSettles = 0;
@@ -1019,7 +1019,7 @@ public:
         double tdQueryTime = tdTimer.elapsedMilliseconds();
         std::cout << std::endl;
 
-        std::cout << "--- Statistics TimeDependentDijkstraStateful ---" << std::endl;
+        std::cout << "--- Statistics TransferAwareDijkstra ---" << std::endl;
         algorithmTD.getProfiler().printStatistics();
         std::cout << "Avg settles/query: " << (totalTDSettles / (double)n) << std::endl;
         std::cout << "Avg relaxes/query: " << (totalTDRelaxes / (double)n) << std::endl;
@@ -1541,7 +1541,7 @@ class CompareCSTvsClassicVariants : public ParameterizedCommand {
 public:
     CompareCSTvsClassicVariants(BasicShell& shell) :
         ParameterizedCommand(shell, "compareCSTvsClassicVariants",
-            "Compares TimeDependentDijkstraStatefulCST (Combined Search Trees) vs TimeDependentDijkstraStatefulClassic (standard binary search).") {
+            "Compares TransferAwareDijkstraCST (Combined Search Trees) vs TimeDependentDijkstra (standard binary search).") {
         addParameter("Intermediate input file");
         addParameter("Core CH input file");
         addParameter("Number of queries");
@@ -1602,7 +1602,7 @@ public:
         // --- Run Classic Dijkstra ---
         std::cout << "\n=== Running TD-Dijkstra (Classic - Standard Binary Search) ===" << std::endl;
 
-        using TDDijkstraClassic = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        using TDDijkstraClassic = TimeDependentDijkstra<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDDijkstraClassic algorithmClassic(graphClassic, intermediateData.numberOfStops(), &ch);
 
         Timer classicTimer;
@@ -1624,7 +1624,7 @@ public:
         // --- Run CST Dijkstra ---
         std::cout << "\n=== Running TD-Dijkstra (CST - Combined Search Trees) ===" << std::endl;
 
-        using TDDijkstraCST = TimeDependentDijkstraStatefulCST<TDD::AggregateProfiler, false, true>;
+        using TDDijkstraCST = TransferAwareDijkstraCST<TDD::AggregateProfiler, false, true>;
         TDDijkstraCST algorithmCST(graphCST, intermediateData.numberOfStops(), &ch);
 
         Timer cstTimer;
@@ -1773,7 +1773,7 @@ class CompareFCvsClassicVariants : public ParameterizedCommand {
 public:
     CompareFCvsClassicVariants(BasicShell& shell) :
         ParameterizedCommand(shell, "compareFCvsClassicVariants",
-            "Compares TimeDependentDijkstraStatefulFC (Fractional Cascading) vs TimeDependentDijkstraStatefulClassic (standard binary search).") {
+            "Compares TransferAwareDijkstraFC (Fractional Cascading) vs TimeDependentDijkstra (standard binary search).") {
         addParameter("Intermediate input file");
         addParameter("Core CH input file");
         addParameter("Number of queries");
@@ -1834,7 +1834,7 @@ public:
         // --- Run Classic Dijkstra ---
         std::cout << "\n=== Running TD-Dijkstra (Classic - Standard Binary Search) ===" << std::endl;
 
-        using TDDijkstraClassic = TimeDependentDijkstraStatefulClassic<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        using TDDijkstraClassic = TimeDependentDijkstra<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDDijkstraClassic algorithmClassic(graphClassic, intermediateData.numberOfStops(), &ch);
 
         Timer classicTimer;
@@ -1856,7 +1856,7 @@ public:
         // --- Run FC Dijkstra ---
         std::cout << "\n=== Running TD-Dijkstra (FC - Fractional Cascading) ===" << std::endl;
 
-        using TDDijkstraFC = TimeDependentDijkstraStatefulFC<TDD::AggregateProfiler, false, true>;
+        using TDDijkstraFC = TransferAwareDijkstraFC<TDD::AggregateProfiler, false, true>;
         TDDijkstraFC algorithmFC(graphFC, intermediateData.numberOfStops(), &ch);
 
         Timer fcTimer;
@@ -2251,7 +2251,7 @@ public:
                   << graph.numEdges() << " edges" << std::endl;
 
         // Create the TD-Dijkstra algorithm instance
-        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        using TDDijkstra = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         TDDijkstra algorithm(graph);
 
         const size_t n = getParameter<size_t>("Number of queries");
@@ -2306,7 +2306,7 @@ public:
         std::cout << "Time-dependent graph loaded: " << graph.numVertices() << " vertices, "
                   << graph.numEdges() << " edges" << std::endl;
 
-        using TDDijkstra = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        using TDDijkstra = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
 
         // Pass intermediateData to constructor
         TDDijkstra algorithm(graph);
@@ -2394,7 +2394,7 @@ public:
         // --- Run TD-Dijkstra (stateful) ---
         std::cout << "\n--- Running TD-Dijkstra (stateful) ---" << std::endl;
 
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false>;
+        using TDDijkstraStateful = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false>;
         // Pass intermediateData as the second argument
         TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops());
 
@@ -2505,7 +2505,7 @@ public:
         // --- Run TD-Dijkstra (stateful) with CoreCH ---
         std::cout << "\n--- Running TD-Dijkstra (stateful) with CoreCH ---" << std::endl;
 
-        using TDDijkstraStateful = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        using TDDijkstraStateful = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         TDDijkstraStateful algorithm_td(graph, raptorData.numberOfStops(), &ch);
 
         Timer tdTimer;
@@ -2657,7 +2657,7 @@ class CompareTDGraphVariants : public ParameterizedCommand {
 public:
     CompareTDGraphVariants(BasicShell& shell) :
         ParameterizedCommand(shell, "compareTDGraphVariants",
-            "Compares TimeDependentDijkstraStateful performance on TimeDependentGraph vs TimeDependentGraphClassic (with dominated edge filtering).") {
+            "Compares TransferAwareDijkstra performance on TimeDependentGraph vs TimeDependentGraphClassic (with dominated edge filtering).") {
         addParameter("Intermediate binary file");
         addParameter("Core CH input file");
         addParameter("Number of queries");
@@ -2712,7 +2712,7 @@ public:
         // --- Run TD-Dijkstra on Standard Graph ---
         std::cout << "\n=== Running TD-Dijkstra on TimeDependentGraph (Standard) ===" << std::endl;
 
-        using TDDijkstraStandard = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        using TDDijkstraStandard = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
         TDDijkstraStandard algorithmStandard(graphStandard, intermediateData.numberOfStops(), &ch);
 
         Timer standardTimer;
@@ -2734,7 +2734,7 @@ public:
         // --- Run TD-Dijkstra on Classic Graph with Filtering ---
         std::cout << "\n=== Running TD-Dijkstra on TimeDependentGraphClassic (Filtered) ===" << std::endl;
 
-        using TDDijkstraClassic = TimeDependentDijkstraStateful<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
+        using TDDijkstraClassic = TransferAwareDijkstra<TimeDependentGraphClassic, TDD::AggregateProfiler, false, true>;
         TDDijkstraClassic algorithmClassic(graphClassic, intermediateData.numberOfStops(), &ch);
 
         Timer classicTimer;
@@ -3093,7 +3093,7 @@ public:
         // 2. Run WITHOUT Pruning (TARGET_PRUNING = false)
         std::cout << "\n--- Running without Target Pruning ---" << std::endl;
         // Template Args: <Graph, Profiler, Debug=false, TargetPruning=false>
-        using TDDijkstraNoPrune = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, false>;
+        using TDDijkstraNoPrune = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, false>;
 
         // Constructor: graph, numStops (0=auto), chPointer
         TDDijkstraNoPrune algo_no_pruning(graph, 0, chPointer);
@@ -3108,7 +3108,7 @@ public:
         // 3. Run WITH Pruning (TARGET_PRUNING = true)
         std::cout << "\n--- Running with Target Pruning ---" << std::endl;
         // Template Args: <Graph, Profiler, Debug=false, TargetPruning=true>
-        using TDDijkstraPrune = TimeDependentDijkstraStateful<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
+        using TDDijkstraPrune = TransferAwareDijkstra<TimeDependentGraph, TDD::AggregateProfiler, false, true>;
 
         TDDijkstraPrune algo_pruning(graph, 0, chPointer);
 

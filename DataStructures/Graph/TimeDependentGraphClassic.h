@@ -5,7 +5,7 @@
 //
 // If TimeDependentGraph.h has already been included, we don't redefine the
 // structs. Both graph classes use the same struct definitions and are
-// compatible with TimeDependentDijkstraStateful.
+// compatible with TransferAwareDijkstra.
 // ============================================================================
 
 #include <vector>
@@ -49,7 +49,7 @@ using TransferGraph = ::TransferGraph;
 4. ENHANCEMENT: Implements dominated connection filtering (cut operation) to reduce graph size.
 
 [USAGE] The main data structure instantiated by the routing engine
-(TimeDependentDijkstraStateful) to answer queries with optimized edge sets.
+(TransferAwareDijkstra) to answer queries with optimized edge sets.
 */
 class TimeDependentGraphClassic {
 public:
@@ -189,7 +189,7 @@ public:
     // [CORE LOGIC] Helper for path reconstruction.
     // Finds a tripId that goes from u -> v, departing >= minDepTime and arriving == atArrTime.
     //
-    // [USAGE] Called by TimeDependentDijkstraStateful::getPath() during the backward pass
+    // [USAGE] Called by TransferAwareDijkstra::getPath() during the backward pass
     // to recover the tripId since we don't store it during the hot forward scan.
     inline FoundTrip findMatchingTrip(Vertex u, Vertex v, int minDepTime, int atArrTime) const noexcept {
         // Iterate edges from u to find connection to v

@@ -97,7 +97,7 @@ struct VertexPairHash {
 3. Edges store 'EdgeTripsHandle' indices into these flattened vectors.
 
 [USAGE] The main data structure instantiated by the routing engine
-(TimeDependentDijkstraStateful) to answer queries.
+(TransferAwareDijkstra) to answer queries.
 */
 class TimeDependentGraph {
 private:
@@ -231,7 +231,7 @@ public:
     // [CORE LOGIC] Helper for path reconstruction.
     // Finds a tripId that goes from u -> v, departing >= minDepTime and arriving == atArrTime.
     //
-    // [USAGE] Called by TimeDependentDijkstraStateful::getPath() during the backward pass
+    // [USAGE] Called by TransferAwareDijkstra::getPath() during the backward pass
     // to recover the tripId since we don't store it during the hot forward scan.    
     inline FoundTrip findMatchingTrip(Vertex u, Vertex v, int minDepTime, int atArrTime) const noexcept {
         // Iterate edges from u to find connection to v

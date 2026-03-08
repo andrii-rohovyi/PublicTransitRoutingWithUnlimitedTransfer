@@ -10,30 +10,19 @@
 #include "../../Helpers/String/String.h"
 #include "../../DataStructures/Container/ExternalKHeap.h"
 #include "../../DataStructures/Attributes/AttributeNames.h"
-#include "../../DataStructures/Graph/TimeDependentGraph.h"
-#include "../../DataStructures/Graph/TimeDependentGraphClassic.h"
+#include "../../DataStructures/Graph/TimeDependentGraphFC.h"
 #include "../../Algorithms/CH/CH.h"
-#include "../../Algorithms/CH/Query/CHQuery.h"
+#include "../../Algorithms/CH/Query/BucketQuery.h"
 #include "Profiler.h"
 
-// A simplified time-dependent Dijkstra WITHOUT trip scanning optimization.
-// Similar to the Python TimeDependentDijkstra implementation.
-//
-// DIFFERENCES FROM TimeDependentDijkstraStateful:
-// 1. No scanTrip - each connection is treated as an individual edge
-// 2. Simpler label structure - no vehicle labels
-// 3. No trip continuation optimization
-// 4. More similar to classic Dijkstra with time-dependent edge weights
-
-template<typename GRAPH, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
-class TimeDependentDijkstraStatefulClassic {
+template<typename GRAPH_TYPE, typename PROFILER = TDD::NoProfiler, bool DEBUG = false, bool TARGET_PRUNING = true>
+class TransferAwareDijkstraFCBucketCH {
 public:
-    using Graph = GRAPH;
+    using Graph = GRAPH_TYPE;
     using Profiler = PROFILER;
     static constexpr bool Debug = DEBUG;
-    using CoreCHInitialTransfers = CH::Query<CHGraph, true, false, true>;
+    using BucketCHQuery = CH::BucketQuery<CHGraph, true, false>;
 
-    // --- NODE LABEL (simpler than the full version) ---
     struct NodeLabel : public ExternalKHeapElement {
         NodeLabel() : ExternalKHeapElement(), arrivalTime(intMax), timeStamp(-1),
                       parent(noVertex) {}
@@ -48,25 +37,24 @@ public:
             return arrivalTime < other->arrivalTime;
         }
 
-        int arrivalTime;            // 4
-        int timeStamp;              // 4
-        Vertex parent;              // 4
-        // No state tracking - simpler model
+        int arrivalTime;
+        int timeStamp;
+        Vertex parent;
     };
 
 public:
-    TimeDependentDijkstraStatefulClassic(const Graph& g, const size_t numStops = 0, const CH::CH* chData = nullptr)
+    TransferAwareDijkstraFCBucketCH(const Graph& g, const size_t numStops, const CH::CH* chData)
         : graph(g)
-        , numberOfStops(numStops == 0 ? g.numVertices() : numStops)
+        , numberOfStops(numStops)
         , Q(g.numVertices())
         , nodeLabels(g.numVertices())
         , timeStamp(0)
         , settleCount(0)
         , relaxCount(0)
-        , targetVertex(noVertex) {
-            if (chData) {
-                initialTransfers = std::make_unique<CoreCHInitialTransfers>(*chData, FORWARD, numberOfStops);
-            }
+        , targetVertex(noVertex)
+        , fcSearchCount(0)
+        , regularSearchCount(0)
+        , bucketQuery(*chData, FORWARD, numberOfStops) {
         }
 
     inline void clear() noexcept {
@@ -75,6 +63,8 @@ public:
         timeStamp++;
         settleCount = 0;
         relaxCount = 0;
+        fcSearchCount = 0;
+        regularSearchCount = 0;
         timer.restart();
         targetVertex = noVertex;
         profiler.donePhase(TDD::PHASE_CLEAR);
@@ -97,20 +87,17 @@ public:
         targetVertex = target;
 
         profiler.startPhase(TDD::PHASE_INITIALIZATION);
-        if (initialTransfers) {
-            initialTransfers->run(source, target);
-            for (const Vertex stop : initialTransfers->getForwardPOIs()) {
-                const int arrivalTime = departureTime + initialTransfers->getForwardDistance(stop);
-                addSource(stop, arrivalTime);
+        // Use Bucket-CH for initial transfers
+        bucketQuery.run(source, target);
+        for (const Vertex stop : bucketQuery.getForwardPOIs()) {
+            const int arrivalTime = departureTime + bucketQuery.getForwardDistance(stop);
+            addSource(stop, arrivalTime);
+        }
+        if (target != noVertex) {
+            const int dist = bucketQuery.getDistance();
+            if (dist != INFTY) {
+                addSource(target, departureTime + dist);
             }
-            if (target != noVertex) {
-                const int dist = initialTransfers->getDistance();
-                if (dist != INFTY) {
-                    addSource(target, departureTime + dist);
-                }
-            }
-        } else {
-            addSource(source, departureTime);
         }
         profiler.donePhase(TDD::PHASE_INITIALIZATION);
 
@@ -135,26 +122,8 @@ public:
     inline int getRelaxCount() const noexcept { return relaxCount; }
     inline double getElapsedMilliseconds() const noexcept { return timer.elapsedMilliseconds(); }
 
-    struct PathEntry {
-        Vertex vertex;
-        int arrivalTime;
-    };
-
-    inline std::vector<PathEntry> getPath(const Vertex target) const noexcept {
-        std::vector<PathEntry> path;
-        if (!reachable(target)) return path;
-
-        Vertex curVertex = target;
-
-        // Reconstruct path backwards
-        while (curVertex != noVertex) {
-            const NodeLabel& L = nodeLabels[curVertex];
-            path.push_back({curVertex, L.arrivalTime});
-            curVertex = L.parent;
-        }
-
-        std::reverse(path.begin(), path.end());
-        return path;
+    inline const Profiler& getProfiler() const noexcept {
+        return profiler;
     }
 
 private:
@@ -171,7 +140,6 @@ private:
         while (!Q.empty()) {
             const NodeLabel* cur = Q.extractFront();
 
-            // Deduce vertex index from pointer math
             const Vertex u = Vertex(cur - nodeLabels.data());
             const int t = cur->arrivalTime;
 
@@ -194,28 +162,113 @@ private:
 
             if (stop()) break;
 
-            // 1. CoreCH Backward (if enabled)
-            if (targetVertex != noVertex && initialTransfers && u < numberOfStops) {
-                const int backwardDist = initialTransfers->getBackwardDistance(u);
+            // 1. Bucket-CH Backward (scan buckets)
+            if (targetVertex != noVertex && u < numberOfStops) {
+                const int backwardDist = bucketQuery.getBackwardDistance(u);
                 if (backwardDist != INFTY) {
                     const int arrivalAtTarget = t + backwardDist;
                     relaxEdge(targetVertex, u, arrivalAtTarget);
                 }
             }
 
-            // 2. Scan Edges - SIMPLIFIED VERSION (no trip scanning)
-            for (const Edge e : graph.edgesFrom(u)) {
-                const Vertex v = graph.get(ToVertex, e);
-
-                // Get the earliest arrival using the edge's ATF
-                const int arrivalAtV = graph.getArrivalTime(e, t);
-
-                if (arrivalAtV < never) {
-                    relaxEdge(v, u, arrivalAtV);
-                }
+            // 2. Scan edges - use FC if available
+            if (graph.hasFCData(u)) {
+                relaxEdgesWithFC(u, t);
+            } else {
+                relaxEdgesRegular(u, t);
             }
         }
         profiler.donePhase(TDD::PHASE_MAIN_LOOP);
+    }
+
+    inline void relaxEdgesWithFC(const Vertex u, const int departureTime) noexcept {
+        fcSearchCount++;
+
+        const FractionalCascadingData& fc = graph.getFCData(u);
+
+        if (fc.m_arr.empty() || fc.reachableEdges.empty()) return;
+
+        const size_t numLevels = fc.m_arr.size();
+
+        int loc = fc.bisectLeft(departureTime);
+
+        if (loc >= (int)fc.pointers[0].size()) {
+            loc = (int)fc.pointers[0].size() - 1;
+        }
+        if (loc < 0) loc = 0;
+
+        const FCPointer& ptr0 = fc.pointers[0][loc];
+        relaxEdgeWithStartIndex(fc.reachableEdges[0], fc.reachableNodes[0], u, departureTime, ptr0.startIndex);
+
+        int nextLoc = ptr0.nextLoc;
+
+        for (size_t i = 1; i < numLevels; ++i) {
+            if (nextLoc >= (int)fc.m_arr[i].size()) {
+                nextLoc = (int)fc.m_arr[i].size() - 1;
+            }
+            if (nextLoc < 0) nextLoc = 0;
+
+            int ptrIndex;
+            if (nextLoc > 0 && departureTime <= fc.m_arr[i][nextLoc - 1]) {
+                ptrIndex = nextLoc - 1;
+            } else {
+                ptrIndex = nextLoc;
+            }
+
+            if (ptrIndex >= (int)fc.pointers[i].size()) {
+                ptrIndex = (int)fc.pointers[i].size() - 1;
+            }
+            if (ptrIndex < 0) ptrIndex = 0;
+
+            const FCPointer& ptr_i = fc.pointers[i][ptrIndex];
+            relaxEdgeWithStartIndex(fc.reachableEdges[i], fc.reachableNodes[i], u, departureTime, ptr_i.startIndex);
+
+            nextLoc = ptr_i.nextLoc;
+        }
+
+        for (size_t i = 0; i < fc.walkingEdges.size(); ++i) {
+            const Edge e = fc.walkingEdges[i];
+            const Vertex v = fc.walkingNodes[i];
+
+            const int arrivalAtV = graph.getWalkArrivalFrom(e, departureTime);
+            if (arrivalAtV < never) {
+                relaxEdge(v, u, arrivalAtV);
+            }
+        }
+    }
+
+    inline void relaxEdgeWithStartIndex(const Edge e, const Vertex v, const Vertex parent,
+                                         const int departureTime, const int startIndex) noexcept {
+        const EdgeTripsHandle& h = graph.get(Function, e);
+
+        int bestArrival = never;
+
+        if (startIndex >= 0 && (uint32_t)startIndex < h.tripCount) {
+            const int* suffixMin = graph.getSuffixMinBegin(h);
+            bestArrival = suffixMin[startIndex];
+        }
+
+        if (h.walkTime != never) {
+            int walkArrival = departureTime + h.walkTime;
+            bestArrival = std::min(bestArrival, walkArrival);
+        }
+
+        if (bestArrival < never) {
+            relaxEdge(v, parent, bestArrival);
+        }
+    }
+
+    inline void relaxEdgesRegular(const Vertex u, const int departureTime) noexcept {
+        regularSearchCount++;
+
+        for (const Edge e : graph.edgesFrom(u)) {
+            const Vertex v = graph.get(ToVertex, e);
+            const int arrivalAtV = graph.getWalkArrivalFrom(e, departureTime);
+
+            if (arrivalAtV < never) {
+                relaxEdge(v, u, arrivalAtV);
+            }
+        }
     }
 
     inline void relaxEdge(const Vertex v, const Vertex parent, const int newTime) noexcept {
@@ -231,24 +284,18 @@ private:
         }
     }
 
-public:
-    inline const Profiler& getProfiler() const noexcept {
-        return profiler;
-    }
-
 private:
     const Graph& graph;
     const size_t numberOfStops;
     ExternalKHeap<2, NodeLabel> Q;
-
     std::vector<NodeLabel> nodeLabels;
-    // No vehicle labels in this simplified version
-
     int timeStamp;
     int settleCount;
     int relaxCount;
     Timer timer;
-    std::unique_ptr<CoreCHInitialTransfers> initialTransfers;
     Vertex targetVertex;
     Profiler profiler;
+    size_t fcSearchCount;
+    size_t regularSearchCount;
+    BucketCHQuery bucketQuery;
 };
