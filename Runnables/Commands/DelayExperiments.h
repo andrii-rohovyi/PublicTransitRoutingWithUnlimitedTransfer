@@ -1361,14 +1361,18 @@ public:
         //  3. Convert TB shortcuts to stop-level graph (shared by CSA,
         //     ULTRA-RAPTOR, ULTRA-RAPTOR (EP))
         // =================================================================
+        Timer conversionTimer;
         Intermediate::TransferGraph shortcutGraph =
             DelayHelpers::convertShortcutsToStopGraph(
                 queryData.tripData.raptorData, queryData.tripData);
+        const double conversionTimeMs = conversionTimer.elapsedMilliseconds();
         std::cout << "  Shortcut conversion: "
                   << queryData.tripData.stopEventGraph.numEdges()
                   << " stop-event edges -> "
                   << shortcutGraph.numEdges()
-                  << " stop edges" << std::endl;
+                  << " stop edges ("
+                  << String::msToString(conversionTimeMs) << ")"
+                  << std::endl;
 
         // =================================================================
         //  4. MR baseline (Dijkstra-RAPTOR with walking transfers)
