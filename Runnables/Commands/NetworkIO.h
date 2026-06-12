@@ -2,6 +2,9 @@
 #include <rapidjson/filereadstream.h>
 #pragma once
 
+#include <cstdio>
+#include <fstream>
+#include <iomanip>
 #include <string>
 
 #include "../../DataStructures/CSA/Data.h"
@@ -458,4 +461,149 @@ private:
             return std::hash<int64_t>()(p.first) ^ std::hash<int64_t>()(p.second);
         }
     };
+};
+
+class RaptorToGTFS : public ParameterizedCommand {
+
+public:
+    RaptorToGTFS(BasicShell& shell) :
+        ParameterizedCommand(shell, "raptorToGTFS",
+            "Exports a RAPTOR binary network as a routing-equivalent GTFS feed.") {
+        addParameter("RAPTOR input file");
+        addParameter("Output directory");
+        addParameter("Reference date YYYYMMDD", "20210101");
+        addParameter("Service end date YYYYMMDD", "20211231");
+        addParameter("Agency timezone", "Europe/Zurich");
+    }
+
+    virtual void execute() noexcept {
+        const std::string inputFile = getParameter("RAPTOR input file");
+        const std::string outDir = getParameter("Output directory");
+        const std::string startDate = getParameter("Reference date YYYYMMDD");
+        const std::string endDate = getParameter("Service end date YYYYMMDD");
+        const std::string tz = getParameter("Agency timezone");
+
+        RAPTOR::Data data = RAPTOR::Data::FromBinary(inputFile);
+        data.printInfo();
+
+        writeAgency(outDir + "/agency.txt", tz);
+        writeCalendar(outDir + "/calendar.txt", startDate, endDate);
+        writeStops(outDir + "/stops.txt", data);
+        writeRoutes(outDir + "/routes.txt", data);
+        writeTripsAndStopTimes(outDir + "/trips.txt", outDir + "/stop_times.txt", data);
+        writeTransfers(outDir + "/transfers.txt", data);
+
+        std::cout << "GTFS export written to: " << outDir << std::endl;
+        std::cout << "Reference date for day 0: " << startDate << std::endl;
+        std::cout << "(RAPTOR time T seconds maps to wall-clock " << startDate << " + T seconds.)" << std::endl;
+    }
+
+private:
+    static inline std::string formatGtfsTime(int seconds) noexcept {
+        const int h = seconds / 3600;
+        const int m = (seconds / 60) % 60;
+        const int s = seconds % 60;
+        char buf[16];
+        std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, m, s);
+        return buf;
+    }
+
+    static inline std::string csvEscape(const std::string& in) noexcept {
+        bool needsQuotes = false;
+        for (char c : in) {
+            if (c == ',' || c == '"' || c == '\n' || c == '\r') { needsQuotes = true; break; }
+        }
+        if (!needsQuotes) return in;
+        std::string out = "\"";
+        for (char c : in) {
+            if (c == '"') out += "\"\"";
+            else out += c;
+        }
+        out += "\"";
+        return out;
+    }
+
+    static inline int normalizeRouteType(int rawType) noexcept {
+        if (rawType >= 0 && rawType <= 12) return rawType;
+        return 3;
+    }
+
+    void writeAgency(const std::string& path, const std::string& tz) const noexcept {
+        std::ofstream f(path);
+        Assert(f.is_open(), "cannot open file: " << path);
+        f << "agency_id,agency_name,agency_url,agency_timezone\n";
+        f << "synthetic,Synthetic Transit,https://example.com," << tz << "\n";
+    }
+
+    void writeCalendar(const std::string& path, const std::string& start, const std::string& end) const noexcept {
+        std::ofstream f(path);
+        Assert(f.is_open(), "cannot open file: " << path);
+        f << "service_id,monday,tuesday,wednesday,thursday,friday,saturday,sunday,start_date,end_date\n";
+        f << "always,1,1,1,1,1,1,1," << start << "," << end << "\n";
+    }
+
+    void writeStops(const std::string& path, const RAPTOR::Data& data) const noexcept {
+        std::ofstream f(path);
+        Assert(f.is_open(), "cannot open file: " << path);
+        f << "stop_id,stop_name,stop_lat,stop_lon\n";
+        f << std::fixed << std::setprecision(7);
+        for (const StopId s : data.stops()) {
+            const auto& sd = data.stopData[s];
+            const std::string name = sd.name.empty() ? ("Stop " + std::to_string(s.value())) : sd.name;
+            f << "s" << s.value() << "," << csvEscape(name) << ","
+              << sd.coordinates.latitude << "," << sd.coordinates.longitude << "\n";
+        }
+    }
+
+    void writeRoutes(const std::string& path, const RAPTOR::Data& data) const noexcept {
+        std::ofstream f(path);
+        Assert(f.is_open(), "cannot open file: " << path);
+        f << "route_id,agency_id,route_short_name,route_long_name,route_type\n";
+        for (const RouteId r : data.routes()) {
+            const auto& rd = data.routeData[r];
+            const std::string name = rd.name.empty() ? ("Route " + std::to_string(r.value())) : rd.name;
+            f << "r" << r.value() << ",synthetic," << csvEscape(name) << ",,"
+              << normalizeRouteType(rd.type) << "\n";
+        }
+    }
+
+    void writeTripsAndStopTimes(const std::string& tripsPath, const std::string& stPath,
+                                const RAPTOR::Data& data) const noexcept {
+        std::ofstream tf(tripsPath);
+        std::ofstream sf(stPath);
+        Assert(tf.is_open(), "cannot open file: " << tripsPath);
+        Assert(sf.is_open(), "cannot open file: " << stPath);
+        tf << "route_id,service_id,trip_id\n";
+        sf << "trip_id,arrival_time,departure_time,stop_id,stop_sequence\n";
+        for (const RouteId r : data.routes()) {
+            const StopId* stops = data.stopArrayOfRoute(r);
+            const RAPTOR::StopEvent* events = data.firstTripOfRoute(r);
+            const size_t tripLength = data.numberOfStopsInRoute(r);
+            const size_t numTrips = data.numberOfTripsInRoute(r);
+            for (size_t t = 0; t < numTrips; t++) {
+                const std::string tripId = "r" + std::to_string(r.value()) + "_t" + std::to_string(t);
+                tf << "r" << r.value() << ",always," << tripId << "\n";
+                for (size_t j = 0; j < tripLength; j++) {
+                    const RAPTOR::StopEvent& e = events[t * tripLength + j];
+                    sf << tripId << "," << formatGtfsTime(e.arrivalTime) << ","
+                       << formatGtfsTime(e.departureTime) << ",s" << stops[j].value() << ","
+                       << j << "\n";
+                }
+            }
+        }
+    }
+
+    void writeTransfers(const std::string& path, const RAPTOR::Data& data) const noexcept {
+        std::ofstream f(path);
+        Assert(f.is_open(), "cannot open file: " << path);
+        f << "from_stop_id,to_stop_id,transfer_type,min_transfer_time\n";
+        for (const StopId from : data.stops()) {
+            for (const Edge edge : data.transferGraph.edgesFrom(from)) {
+                const Vertex to = data.transferGraph.get(ToVertex, edge);
+                if (!data.isStop(to)) continue;
+                f << "s" << from.value() << ",s" << to.value() << ",2,"
+                  << data.transferGraph.get(TravelTime, edge) << "\n";
+            }
+        }
+    }
 };

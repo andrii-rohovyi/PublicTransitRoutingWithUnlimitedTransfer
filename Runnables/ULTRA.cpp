@@ -73,7 +73,9 @@ int main(int argc, char** argv) {
     new CheckMcRAPTORPruning(shell);
     new CheckULTRAMcRAPTORPruning(shell);
     new CheckBMcRAPTORPruning(shell);
+    new CheckBMcRAPTORPruningStages(shell);
     new CheckUBMRAPTORPruning(shell);
+    new CheckUBMRAPTORPruningStages(shell);
     new CheckDijkstraRAPTORPruning(shell);
     new CheckTDDijkstraPruning(shell);
     new CheckMCRPruning(shell);

@@ -13,12 +13,13 @@
 
 namespace RAPTOR {
 
-template<typename PROFILER>
+template<typename PROFILER, typename FWD_PRUNING = ForwardPruningRAPTOR<PROFILER>>
 class BackwardPruningRAPTOR {
 
 public:
     using Profiler = PROFILER;
-    using Type = BackwardPruningRAPTOR<Profiler>;
+    using ForwardType = FWD_PRUNING;
+    using Type = BackwardPruningRAPTOR<Profiler, ForwardType>;
 
 public:
     struct EarliestArrivalLabel {
@@ -40,7 +41,7 @@ public:
     using Round = std::vector<EarliestArrivalLabel>;
 
 public:
-    BackwardPruningRAPTOR(const Data& data, const ForwardPruningRAPTOR<Profiler>& forwardPruningRAPTOR, Profiler& profiler) :
+    BackwardPruningRAPTOR(const Data& data, const ForwardType& forwardPruningRAPTOR, Profiler& profiler) :
         data(data),
         forwardPruningRAPTOR(forwardPruningRAPTOR),
         roundOffset(-1),
@@ -247,7 +248,7 @@ private:
 
 private:
     const Data& data;
-    const ForwardPruningRAPTOR<Profiler>& forwardPruningRAPTOR;
+    const ForwardType& forwardPruningRAPTOR;
 
     std::vector<Round> rounds;
     size_t roundOffset;

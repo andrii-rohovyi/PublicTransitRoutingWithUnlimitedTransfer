@@ -13,13 +13,16 @@
 
 namespace RAPTOR {
 
-template<typename PROFILER, typename INITIAL_TRANSFERS = BucketCHInitialTransfers>
+template<typename PROFILER,
+         typename INITIAL_TRANSFERS = BucketCHInitialTransfers,
+         typename FWD_PRUNING = ForwardPruningULTRARAPTOR<PROFILER, INITIAL_TRANSFERS>>
 class BackwardPruningULTRARAPTOR {
 
 public:
     using Profiler = PROFILER;
+    using ForwardType = FWD_PRUNING;
     using InitialTransferType = INITIAL_TRANSFERS;
-    using Type = BackwardPruningULTRARAPTOR<Profiler, InitialTransferType>;
+    using Type = BackwardPruningULTRARAPTOR<Profiler, InitialTransferType, ForwardType>;
 
 public:
     struct EarliestArrivalLabel {
@@ -30,7 +33,7 @@ public:
     using Round = std::vector<EarliestArrivalLabel>;
 
 public:
-    BackwardPruningULTRARAPTOR(const Data& data, const InitialTransferType& initialTransfers, const ForwardPruningULTRARAPTOR<Profiler, InitialTransferType>& forwardPruningRAPTOR, Profiler& profiler) :
+    BackwardPruningULTRARAPTOR(const Data& data, const InitialTransferType& initialTransfers, const ForwardType& forwardPruningRAPTOR, Profiler& profiler) :
         data(data),
         initialTransfers(initialTransfers),
         forwardPruningRAPTOR(forwardPruningRAPTOR),
@@ -260,7 +263,7 @@ private:
 private:
     const Data& data;
     const InitialTransferType& initialTransfers;
-    const ForwardPruningULTRARAPTOR<Profiler, InitialTransferType>& forwardPruningRAPTOR;
+    const ForwardType& forwardPruningRAPTOR;
 
     std::vector<Round> rounds;
     size_t roundOffset;

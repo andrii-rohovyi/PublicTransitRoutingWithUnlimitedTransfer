@@ -8,7 +8,9 @@
 #include "../../../DataStructures/RAPTOR/Entities/ArrivalLabel.h"
 #include "../../../DataStructures/RAPTOR/Entities/Bags.h"
 #include "BackwardPruningRAPTOR.h"
+#include "BackwardPruningRAPTOR_prune.h"
 #include "ForwardPruningRAPTOR.h"
+#include "ForwardPruningRAPTOR_prune.h"
 
 #include "../Profiler.h"
 
@@ -441,12 +443,16 @@ private:
     int sourceDepartureTime;
 };
 
-template<typename PROFILER = NoProfiler>
+template<typename PROFILER = NoProfiler,
+         typename FWD_PRUNING = ForwardPruningRAPTOR<PROFILER>,
+         typename BWD_PRUNING = BackwardPruningRAPTOR<PROFILER>>
 class BoundedMcRAPTOR_prune {
 
 public:
     using Profiler = PROFILER;
-    using Type = BoundedMcRAPTOR_prune<Profiler>;
+    using ForwardPruningType = FWD_PRUNING;
+    using BackwardPruningType = BWD_PRUNING;
+    using Type = BoundedMcRAPTOR_prune<Profiler, ForwardPruningType, BackwardPruningType>;
 
 private:
     struct Label {
@@ -827,8 +833,8 @@ private:
 private:
     const Data& data;
     Profiler profiler;
-    ForwardPruningRAPTOR<Profiler> forwardPruningRAPTOR;
-    BackwardPruningRAPTOR<Profiler> backwardPruningRAPTOR;
+    ForwardPruningType forwardPruningRAPTOR;
+    BackwardPruningType backwardPruningRAPTOR;
 
     std::vector<Round> rounds;
 

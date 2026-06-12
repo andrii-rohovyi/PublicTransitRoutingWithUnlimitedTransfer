@@ -1034,6 +1034,104 @@ public:
     }
 };
 
+class CheckBMcRAPTORPruningStages : public ParameterizedCommand {
+public:
+    CheckBMcRAPTORPruningStages(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkBMcRAPTORPruningStages",
+            "Compares BoundedMcRAPTOR variants with pruning applied at chosen stages.") {
+        addParameter("RAPTOR input file");
+        addParameter("Number of queries");
+        addParameter("Arrival slack");
+        addParameter("Trip slack");
+        addParameter("Pruning stages", "both", {"none", "fwd", "bwd", "both"});
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const double arrivalSlack = getParameter<double>("Arrival slack");
+        const double tripSlack = getParameter<double>("Trip slack");
+        const std::string mode = getParameter("Pruning stages");
+        const std::vector<StopQuery> queries = generateRandomStopQueries(raptorData.numberOfStops(), n);
+
+        const RAPTOR::Data reverseData = raptorData.reverseNetwork();
+        raptorData.sortTransferGraphEdgesByTravelTime();
+
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_baseline;
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_test;
+
+        std::cout << "--- Running baseline BoundedMcRAPTOR (no Fwd/Bwd pruning) ---" << std::endl;
+        RAPTOR::BoundedMcRAPTOR<RAPTOR::AggregateProfiler> algo_baseline(raptorData, reverseData);
+        for (const StopQuery& query : queries) {
+            algo_baseline.run(query.source, query.departureTime, query.target, arrivalSlack, tripSlack);
+            results_baseline.push_back(algo_baseline.getResults(query.target));
+        }
+        std::cout << "--- Statistics for baseline ---" << std::endl;
+        algo_baseline.getProfiler().printStatistics();
+
+        std::cout << "\n--- Running BoundedMcRAPTOR_prune with stages = " << mode << " ---" << std::endl;
+        using Prof = RAPTOR::AggregateProfiler;
+        using Fwd = RAPTOR::ForwardPruningRAPTOR<Prof>;
+        using FwdP = RAPTOR::ForwardPruningRAPTOR_prune<Prof>;
+        if (mode == "none") {
+            runVariant<Fwd, RAPTOR::BackwardPruningRAPTOR<Prof, Fwd>>(
+                raptorData, reverseData, queries, arrivalSlack, tripSlack, results_test);
+        } else if (mode == "fwd") {
+            runVariant<FwdP, RAPTOR::BackwardPruningRAPTOR<Prof, FwdP>>(
+                raptorData, reverseData, queries, arrivalSlack, tripSlack, results_test);
+        } else if (mode == "bwd") {
+            runVariant<Fwd, RAPTOR::BackwardPruningRAPTOR_prune<Prof, Fwd>>(
+                raptorData, reverseData, queries, arrivalSlack, tripSlack, results_test);
+        } else {
+            runVariant<FwdP, RAPTOR::BackwardPruningRAPTOR_prune<Prof, FwdP>>(
+                raptorData, reverseData, queries, arrivalSlack, tripSlack, results_test);
+        }
+
+        bool pruning_correct = (results_baseline.size() == results_test.size());
+        for (size_t i = 0; pruning_correct && i < results_baseline.size(); ++i) {
+            auto base = results_baseline[i];
+            auto test = results_test[i];
+            if (base.size() != test.size()) { pruning_correct = false; break; }
+            auto cmp = [](const auto& a, const auto& b) {
+                if (a.arrivalTime != b.arrivalTime) return a.arrivalTime < b.arrivalTime;
+                return a.walkingDistance < b.walkingDistance;
+            };
+            std::sort(base.begin(), base.end(), cmp);
+            std::sort(test.begin(), test.end(), cmp);
+            for (size_t j = 0; j < base.size(); ++j) {
+                if (base[j].arrivalTime != test[j].arrivalTime ||
+                    base[j].walkingDistance != test[j].walkingDistance) {
+                    pruning_correct = false;
+                    break;
+                }
+            }
+        }
+
+        std::cout << "\n--- Comparison Results (stages = " << mode << ") ---" << std::endl;
+        if (pruning_correct) {
+            std::cout << "Results match baseline." << std::endl;
+        } else {
+            std::cout << "ERROR: Results diverge from baseline." << std::endl;
+        }
+    }
+
+private:
+    template<typename FWD, typename BWD>
+    inline void runVariant(const RAPTOR::Data& raptorData, const RAPTOR::Data& reverseData,
+                           const std::vector<StopQuery>& queries,
+                           const double arrivalSlack, const double tripSlack,
+                           std::vector<std::vector<RAPTOR::WalkingParetoLabel>>& out) const noexcept {
+        RAPTOR::BoundedMcRAPTOR_prune<RAPTOR::AggregateProfiler, FWD, BWD> algo(raptorData, reverseData);
+        for (const StopQuery& query : queries) {
+            algo.run(query.source, query.departureTime, query.target, arrivalSlack, tripSlack);
+            out.push_back(algo.getResults(query.target));
+        }
+        algo.getProfiler().printStatistics();
+    }
+};
+
 class CheckMcRAPTORPruning : public ParameterizedCommand {
 public:
     CheckMcRAPTORPruning(BasicShell& shell) :
@@ -1306,5 +1404,108 @@ public:
         } else {
             std::cout << "❌ ERROR: Pruning failed comparison. Results are not identical." << std::endl;
         }
+    }
+};
+
+class CheckUBMRAPTORPruningStages : public ParameterizedCommand {
+public:
+    CheckUBMRAPTORPruningStages(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkUBMRAPTORPruningStages",
+            "Compares UBM-RAPTOR variants with pruning applied at chosen stages.") {
+        addParameter("RAPTOR input file");
+        addParameter("CH data");
+        addParameter("Number of queries");
+        addParameter("Arrival slack");
+        addParameter("Trip slack");
+        addParameter("Pruning stages", "both", {"none", "fwd", "bwd", "both"});
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const double arrivalSlack = getParameter<double>("Arrival slack");
+        const double tripSlack = getParameter<double>("Trip slack");
+        const std::string mode = getParameter("Pruning stages");
+
+        const RAPTOR::Data reverseData = raptorData.reverseNetwork();
+        CH::CH ch(getParameter("CH data"));
+        raptorData.sortTransferGraphEdgesByTravelTime();
+
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
+
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_baseline;
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_test;
+
+        std::cout << "--- Running baseline UBM-RAPTOR (no Fwd/Bwd pruning) ---" << std::endl;
+        RAPTOR::UBMRAPTOR<RAPTOR::AggregateProfiler> algo_baseline(raptorData, reverseData, ch);
+        for (const VertexQuery& query : queries) {
+            algo_baseline.run(query.source, query.departureTime, query.target, arrivalSlack, tripSlack);
+            results_baseline.push_back(algo_baseline.getResults());
+        }
+        std::cout << "--- Statistics for baseline ---" << std::endl;
+        algo_baseline.getProfiler().printStatistics();
+
+        std::cout << "\n--- Running UBMRAPTOR_prune with stages = " << mode << " ---" << std::endl;
+        using Prof = RAPTOR::AggregateProfiler;
+        using IT = RAPTOR::BucketCHInitialTransfers;
+        using Fwd = RAPTOR::ForwardPruningULTRARAPTOR<Prof, IT>;
+        using FwdP = RAPTOR::ForwardPruningULTRARAPTOR_prune<Prof, IT>;
+        if (mode == "none") {
+            runVariant<Fwd, RAPTOR::BackwardPruningULTRARAPTOR<Prof, IT, Fwd>>(
+                raptorData, reverseData, ch, queries, arrivalSlack, tripSlack, results_test);
+        } else if (mode == "fwd") {
+            runVariant<FwdP, RAPTOR::BackwardPruningULTRARAPTOR<Prof, IT, FwdP>>(
+                raptorData, reverseData, ch, queries, arrivalSlack, tripSlack, results_test);
+        } else if (mode == "bwd") {
+            runVariant<Fwd, RAPTOR::BackwardPruningULTRARAPTOR_prune<Prof, IT, Fwd>>(
+                raptorData, reverseData, ch, queries, arrivalSlack, tripSlack, results_test);
+        } else {
+            runVariant<FwdP, RAPTOR::BackwardPruningULTRARAPTOR_prune<Prof, IT, FwdP>>(
+                raptorData, reverseData, ch, queries, arrivalSlack, tripSlack, results_test);
+        }
+
+        bool pruning_correct = (results_baseline.size() == results_test.size());
+        for (size_t i = 0; pruning_correct && i < results_baseline.size(); ++i) {
+            auto base = results_baseline[i];
+            auto test = results_test[i];
+            if (base.size() != test.size()) { pruning_correct = false; break; }
+            auto cmp = [](const auto& a, const auto& b) {
+                if (a.arrivalTime != b.arrivalTime) return a.arrivalTime < b.arrivalTime;
+                return a.walkingDistance < b.walkingDistance;
+            };
+            std::sort(base.begin(), base.end(), cmp);
+            std::sort(test.begin(), test.end(), cmp);
+            for (size_t j = 0; j < base.size(); ++j) {
+                if (base[j].arrivalTime != test[j].arrivalTime ||
+                    base[j].walkingDistance != test[j].walkingDistance) {
+                    pruning_correct = false;
+                    break;
+                }
+            }
+        }
+
+        std::cout << "\n--- Comparison Results (stages = " << mode << ") ---" << std::endl;
+        if (pruning_correct) {
+            std::cout << "Results match baseline." << std::endl;
+        } else {
+            std::cout << "ERROR: Results diverge from baseline." << std::endl;
+        }
+    }
+
+private:
+    template<typename FWD, typename BWD>
+    inline void runVariant(const RAPTOR::Data& raptorData, const RAPTOR::Data& reverseData,
+                           const CH::CH& ch,
+                           const std::vector<VertexQuery>& queries,
+                           const double arrivalSlack, const double tripSlack,
+                           std::vector<std::vector<RAPTOR::WalkingParetoLabel>>& out) const noexcept {
+        RAPTOR::UBMRAPTOR_prune<RAPTOR::AggregateProfiler, FWD, BWD> algo(raptorData, reverseData, ch);
+        for (const VertexQuery& query : queries) {
+            algo.run(query.source, query.departureTime, query.target, arrivalSlack, tripSlack);
+            out.push_back(algo.getResults());
+        }
+        algo.getProfiler().printStatistics();
     }
 };
