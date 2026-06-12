@@ -12,7 +12,9 @@
 #include "../Profiler.h"
 
 #include "BackwardPruningULTRARAPTOR.h"
+#include "BackwardPruningULTRARAPTOR_prune.h"
 #include "ForwardPruningULTRARAPTOR.h"
+#include "ForwardPruningULTRARAPTOR_prune.h"
 
 namespace RAPTOR {
 
@@ -488,12 +490,16 @@ private:
 
 };
 
-    template<typename PROFILER = NoProfiler>
+    template<typename PROFILER = NoProfiler,
+             typename FWD_PRUNING = ForwardPruningULTRARAPTOR<PROFILER, BucketCHInitialTransfers>,
+             typename BWD_PRUNING = BackwardPruningULTRARAPTOR<PROFILER, BucketCHInitialTransfers, FWD_PRUNING>>
 class UBMRAPTOR_prune {
 
 public:
     using Profiler = PROFILER;
-    using Type = UBMRAPTOR<Profiler>;
+    using ForwardPruningType = FWD_PRUNING;
+    using BackwardPruningType = BWD_PRUNING;
+    using Type = UBMRAPTOR_prune<Profiler, ForwardPruningType, BackwardPruningType>;
 
 private:
     struct Label {
@@ -943,8 +949,8 @@ private:
     const Data& data;
     BucketCHInitialTransfers initialTransfers;
     Profiler profiler;
-    ForwardPruningULTRARAPTOR<Profiler> forwardPruningRAPTOR;
-    BackwardPruningULTRARAPTOR<Profiler> backwardPruningRAPTOR;
+    ForwardPruningType forwardPruningRAPTOR;
+    BackwardPruningType backwardPruningRAPTOR;
 
     std::vector<Round> rounds;
 
