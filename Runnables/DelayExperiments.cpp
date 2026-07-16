@@ -22,7 +22,12 @@ int main(int argc, char** argv) {
     new MeasureHypotheticalDelayULTRAQueryCoverage(shell);
     new MeasureDelayULTRAQueryPerformance(shell);
     new MeasureDelayULTRACSAQueryPerformance(shell);
+
     new MeasureDelayQueryCoverage(shell);
+    new ProjectEventToStopShortcuts(shell);
+    new ProjectClassicEventToStopShortcuts(shell);
+    new MeasureExtraDelayQueries(shell);
+    new RunDelayAlgo(shell);
     shell.run();
     return 0;
 }

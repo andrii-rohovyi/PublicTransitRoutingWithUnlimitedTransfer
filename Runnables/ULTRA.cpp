@@ -45,6 +45,16 @@ int main(int argc, char** argv) {
     new RunULTRACSAQueries(shell);
     new RunTransitiveRAPTORQueries(shell);
     new RunDijkstraRAPTORQueries(shell);
+    new CheckMRBucketCH(shell);
+    new ComparePaperAlgorithms(shell);
+    new CompareCSAEP(shell);
+    new CompareSortingEffectAll(shell);
+    new CompareFullEPTable(shell);
+    new CompareOneAlgEP(shell);
+    new CompareBMPhasesEP(shell);
+    new CheckMCRParetoEquivalence(shell);
+    new ExportTransferGraphText(shell);
+    new ImportHubsFromText(shell);
     new RunDijkstraRAPTORQueriesNoCH(shell);
     new RunTDDijkstraQueries(shell);
     new RunTDDijkstraQueriesFromBinary(shell);
@@ -74,6 +84,7 @@ int main(int argc, char** argv) {
     new CheckULTRAMcRAPTORPruning(shell);
     new CheckBMcRAPTORPruning(shell);
     new CheckBMcRAPTORPruningStages(shell);
+    new CompareBMRAPTORThreeWay(shell);
     new CheckUBMRAPTORPruning(shell);
     new CheckUBMRAPTORPruningStages(shell);
     new CheckDijkstraRAPTORPruning(shell);

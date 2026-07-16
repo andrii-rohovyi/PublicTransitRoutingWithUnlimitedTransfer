@@ -18,12 +18,16 @@
 
 namespace RAPTOR {
 
-template<typename PROFILER = NoProfiler>
+template<typename PROFILER = NoProfiler,
+         typename FWD_PRUNING = ForwardPruningULTRARAPTOR<PROFILER, BucketCHInitialTransfers>,
+         typename BWD_PRUNING = BackwardPruningULTRARAPTOR<PROFILER, BucketCHInitialTransfers, FWD_PRUNING>>
 class UBMRAPTOR {
 
 public:
     using Profiler = PROFILER;
-    using Type = UBMRAPTOR<Profiler>;
+    using ForwardPruningType = FWD_PRUNING;
+    using BackwardPruningType = BWD_PRUNING;
+    using Type = UBMRAPTOR<Profiler, ForwardPruningType, BackwardPruningType>;
 
 private:
     struct Label {

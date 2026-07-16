@@ -8,8 +8,18 @@
 
 #include "Assert.h"
 
+#ifndef __APPLE__
 #include <sched.h>
 #include <numa.h>
+#else
+// macOS: no NUMA / no sched affinity -> single node, pinning is a no-op
+using bitmask = int;
+inline bitmask* numa_allocate_cpumask() { return new bitmask(0); }
+inline void numa_node_to_cpus(int, bitmask*) {}
+inline int numa_bitmask_isbitset(bitmask*, int) { return 1; }
+inline void numa_free_cpumask(bitmask* b) { delete b; }
+inline int numa_node_of_cpu(int) { return 0; }
+#endif
 
 #include <omp.h>
 
@@ -49,10 +59,12 @@ public:
 
     inline void pinThread(const size_t threadId) {
         Assert(threadId < threadToLogicalCpu.size(), "Invalid thread ID " << threadId << "!");
+#ifndef __APPLE__
         cpu_set_t mask;
         CPU_ZERO(&mask);
         CPU_SET(threadToLogicalCpu[threadId], &mask);
         sched_setaffinity(0, sizeof(mask), &mask);
+#endif
     }
 
 protected:
@@ -135,10 +147,14 @@ private:
 };
 
 inline void pinThreadToCoreId(const size_t coreId) noexcept {
+#ifndef __APPLE__
     cpu_set_t mask;
     CPU_ZERO(&mask);
     CPU_SET(coreId, &mask);
     sched_setaffinity(0, sizeof(mask), &mask);
+#else
+    (void)coreId;
+#endif
 }
 
 inline size_t numberOfCores() noexcept {

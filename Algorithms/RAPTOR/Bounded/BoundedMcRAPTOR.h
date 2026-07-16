@@ -17,12 +17,16 @@
 
 namespace RAPTOR {
 
-template<typename PROFILER = NoProfiler>
+template<typename PROFILER = NoProfiler,
+         typename FWD_PRUNING = ForwardPruningRAPTOR<PROFILER>,
+         typename BWD_PRUNING = BackwardPruningRAPTOR<PROFILER, FWD_PRUNING>>
 class BoundedMcRAPTOR {
 
 public:
     using Profiler = PROFILER;
-    using Type = BoundedMcRAPTOR<Profiler>;
+    using ForwardPruningType = FWD_PRUNING;
+    using BackwardPruningType = BWD_PRUNING;
+    using Type = BoundedMcRAPTOR<Profiler, ForwardPruningType, BackwardPruningType>;
 
 private:
     struct Label {
@@ -424,8 +428,8 @@ private:
 private:
     const Data& data;
     Profiler profiler;
-    ForwardPruningRAPTOR<Profiler> forwardPruningRAPTOR;
-    BackwardPruningRAPTOR<Profiler> backwardPruningRAPTOR;
+    ForwardPruningType forwardPruningRAPTOR;
+    BackwardPruningType backwardPruningRAPTOR;
 
     std::vector<Round> rounds;
 
