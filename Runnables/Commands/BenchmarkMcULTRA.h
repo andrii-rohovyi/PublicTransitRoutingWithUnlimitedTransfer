@@ -1034,6 +1034,97 @@ public:
     }
 };
 
+class CompareBMRAPTORThreeWay : public ParameterizedCommand {
+public:
+    CompareBMRAPTORThreeWay(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareBMRAPTORThreeWay",
+            "Three-way BM-RAPTOR comparison on identical queries: (1) unsorted baseline, (2) sorted baseline, (3) sorted + F+B+M target-arrival pruning. Verifies Pareto-set equivalence.") {
+        addParameter("RAPTOR input file");
+        addParameter("Number of queries");
+        addParameter("Arrival slack");
+        addParameter("Trip slack");
+    }
+
+    virtual void execute() noexcept {
+        const size_t n = getParameter<size_t>("Number of queries");
+        const double arrivalSlack = getParameter<double>("Arrival slack");
+        const double tripSlack = getParameter<double>("Trip slack");
+
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+
+        const std::vector<StopQuery> queries = generateRandomStopQueries(raptorData.numberOfStops(), n);
+        const RAPTOR::Data reverseData = raptorData.reverseNetwork();
+
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_unsorted;
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_sorted;
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> results_ep;
+
+        // 1) Unsorted baseline
+        std::cout << "\n--- (1) Unsorted baseline ---" << std::endl;
+        {
+            RAPTOR::BoundedMcRAPTOR<RAPTOR::AggregateProfiler> algo(raptorData, reverseData);
+            for (const StopQuery& q : queries) {
+                algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+                results_unsorted.push_back(algo.getResults(q.target));
+            }
+            algo.getProfiler().printStatistics();
+        }
+
+        // 2) Sort edges, then run baseline on sorted
+        raptorData.sortTransferGraphEdgesByTravelTime();
+
+        std::cout << "\n--- (2) Sorted baseline ---" << std::endl;
+        {
+            RAPTOR::BoundedMcRAPTOR<RAPTOR::AggregateProfiler> algo(raptorData, reverseData);
+            for (const StopQuery& q : queries) {
+                algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+                results_sorted.push_back(algo.getResults(q.target));
+            }
+            algo.getProfiler().printStatistics();
+        }
+
+        // 3) Sorted + F+B+M with target-arrival pruning (mode=both)
+        std::cout << "\n--- (3) Sorted + F+B+M target-arrival pruning ---" << std::endl;
+        {
+            using Prof = RAPTOR::AggregateProfiler;
+            using FwdP = RAPTOR::ForwardPruningRAPTOR_prune<Prof>;
+            using BwdP = RAPTOR::BackwardPruningRAPTOR_prune<Prof, FwdP>;
+            RAPTOR::BoundedMcRAPTOR_prune<Prof, FwdP, BwdP> algo(raptorData, reverseData);
+            for (const StopQuery& q : queries) {
+                algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+                results_ep.push_back(algo.getResults(q.target));
+            }
+            algo.getProfiler().printStatistics();
+        }
+
+        // Correctness: variants 2 and 3 should match variant 1
+        auto sortAndCompare = [](auto& a, auto& b) {
+            if (a.size() != b.size()) return false;
+            auto cmp = [](const auto& x, const auto& y) {
+                if (x.arrivalTime != y.arrivalTime) return x.arrivalTime < y.arrivalTime;
+                return x.walkingDistance < y.walkingDistance;
+            };
+            std::sort(a.begin(), a.end(), cmp);
+            std::sort(b.begin(), b.end(), cmp);
+            for (size_t i = 0; i < a.size(); ++i) {
+                if (a[i].arrivalTime != b[i].arrivalTime || a[i].walkingDistance != b[i].walkingDistance) return false;
+            }
+            return true;
+        };
+
+        size_t mismatchSorted = 0, mismatchEP = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (!sortAndCompare(results_unsorted[i], results_sorted[i])) ++mismatchSorted;
+            if (!sortAndCompare(results_unsorted[i], results_ep[i])) ++mismatchEP;
+        }
+
+        std::cout << "\n=== Correctness vs unsorted baseline ===" << std::endl;
+        std::cout << "  Sorted baseline: " << (mismatchSorted == 0 ? "OK (0 mismatches)" : std::to_string(mismatchSorted) + " mismatches") << std::endl;
+        std::cout << "  F+B+M target EP: " << (mismatchEP == 0 ? "OK (0 mismatches)" : std::to_string(mismatchEP) + " mismatches") << std::endl;
+    }
+};
+
 class CheckBMcRAPTORPruningStages : public ParameterizedCommand {
 public:
     CheckBMcRAPTORPruningStages(BasicShell& shell) :

@@ -10,9 +10,15 @@ using namespace Shell;
 #include "../../Algorithms/CSA/CSA.h"
 #include "../../Algorithms/CSA/DijkstraCSA.h"
 #include "../../Algorithms/CSA/HLCSA.h"
+#include "../../Algorithms/CSA/HLCSA_BucketCH.h"
 #include "../../Algorithms/CSA/ULTRACSA.h"
 #include "../../Algorithms/RAPTOR/HLRAPTOR.h"
 #include "../../Algorithms/RAPTOR/DijkstraRAPTOR.h"
+#include "../../Algorithms/RAPTOR/MCR.h"
+#include "../../Algorithms/RAPTOR/McRAPTOR.h"
+#include "../../Algorithms/RAPTOR/Bounded/BoundedMcRAPTOR.h"
+#include "../../Algorithms/RAPTOR/ULTRABounded/UBMRAPTOR.h"
+#include "../../Algorithms/RAPTOR/ULTRAMcRAPTOR.h"
 #include "../../Algorithms/Dijkstra/TransferAwareDijkstraBucketCH.h"
 #include "../../Algorithms/Dijkstra/TransferAwareDijkstraBSTBucketCH.h"
 #include "../../Algorithms/Dijkstra/TransferAwareDijkstraCSTBucketCH.h"
@@ -2173,6 +2179,86 @@ public:
     }
 };
 
+class CheckMRBucketCH : public ParameterizedCommand {
+public:
+    CheckMRBucketCH(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkMRBucketCH",
+            "Checks if MR with Bucket-CH initial transfers yields the same results as standard MR (Core-CH).") {
+        addParameter("RAPTOR input file");
+        addParameter("CoreCH data (for standard MR)");
+        addParameter("Regular CH data (for Bucket-CH MR; same one ULTRA uses)");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+        CH::CH coreCH(getParameter("CoreCH data (for standard MR)"));
+        CH::CH regularCH(getParameter("Regular CH data (for Bucket-CH MR; same one ULTRA uses)"));
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(coreCH.numVertices(), n);
+
+        std::vector<int> arrivals_corech;
+        std::vector<int> arrivals_bucketch;
+        std::vector<size_t> journey_counts_corech;
+        std::vector<size_t> journey_counts_bucketch;
+
+        std::cout << "--- Running MR (CoreCHInitialTransfers, the shipped variant) ---" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::AggregateProfiler, true, false>
+            algo_corech(raptorData, coreCH);
+        for (const VertexQuery& query : queries) {
+            algo_corech.run(query.source, query.departureTime, query.target);
+            arrivals_corech.push_back(algo_corech.getEarliestArrivalTime(query.target));
+            journey_counts_corech.push_back(algo_corech.getJourneys().size());
+        }
+        std::cout << "--- Statistics for MR (Core-CH) ---" << std::endl;
+        algo_corech.getProfiler().printStatistics();
+
+        std::cout << "\n--- Running MR (BucketCHInitialTransfers, using regular CH like ULTRA does) ---" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::BucketCHInitialTransfers, RAPTOR::AggregateProfiler, true, false>
+            algo_bucketch(raptorData, regularCH);
+        for (const VertexQuery& query : queries) {
+            algo_bucketch.run(query.source, query.departureTime, query.target);
+            arrivals_bucketch.push_back(algo_bucketch.getEarliestArrivalTime(query.target));
+            journey_counts_bucketch.push_back(algo_bucketch.getJourneys().size());
+        }
+        std::cout << "--- Statistics for MR (Bucket-CH) ---" << std::endl;
+        algo_bucketch.getProfiler().printStatistics();
+
+        size_t mismatch_count = 0;
+        size_t journey_count_mismatch = 0;
+        int max_arrival_diff = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (arrivals_corech[i] != arrivals_bucketch[i]) {
+                ++mismatch_count;
+                const int diff = std::abs(arrivals_corech[i] - arrivals_bucketch[i]);
+                if (diff > max_arrival_diff) max_arrival_diff = diff;
+                if (mismatch_count <= 5) {
+                    std::cout << "Mismatch on query " << i
+                              << ": Core-CH arrival = " << arrivals_corech[i]
+                              << ", Bucket-CH arrival = " << arrivals_bucketch[i] << std::endl;
+                }
+            }
+            if (journey_counts_corech[i] != journey_counts_bucketch[i]) {
+                ++journey_count_mismatch;
+            }
+        }
+
+        std::cout << "\n--- Comparison Results ---" << std::endl;
+        std::cout << "Total queries: " << n << std::endl;
+        std::cout << "Arrival-time mismatches: " << mismatch_count << std::endl;
+        std::cout << "Journey-count mismatches: " << journey_count_mismatch << std::endl;
+        if (mismatch_count == 0 && journey_count_mismatch == 0) {
+            std::cout << "MR with Bucket-CH produces identical results to MR with Core-CH." << std::endl;
+        } else {
+            std::cout << "ERROR: MR with Bucket-CH diverges from MR with Core-CH. Max arrival diff: "
+                      << max_arrival_diff << " seconds." << std::endl;
+        }
+    }
+};
+
 class RunDijkstraRAPTORQueriesNoCH : public ParameterizedCommand {
 
 public:
@@ -2617,6 +2703,1368 @@ public:
         } else {
             std::cout << "ERROR: Target pruning failed comparison. Results are not identical." << std::endl;
         }
+    }
+};
+
+class ComparePaperAlgorithms : public ParameterizedCommand {
+public:
+    ComparePaperAlgorithms(BasicShell& shell) :
+        ParameterizedCommand(shell, "comparePaperAlgorithms",
+            "Runs MR, MR(Bucket-CH), HL-CSA, HL-RAPTOR, TD-Dijkstra (CoreCH/BucketCH), TAD (CoreCH/BucketCH), ULTRA-CSA, ULTRA-CSA(EP) on the same query set.") {
+        addParameter("RAPTOR (Contracted) input file");
+        addParameter("CSA (Full graph) input file");
+        addParameter("CSA (ULTRA Shortcuts) input file");
+        addParameter("Intermediate (Full) input file");
+        addParameter("Core-CH data (Contracted/ch)");
+        addParameter("Regular CH data (CH/ch)");
+        addParameter("Out-hub file");
+        addParameter("In-hub file");
+        addParameter("RAPTOR (ULTRA Shortcuts) input file");
+        addParameter("Trip-Based (ULTRA E2E) input file");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        std::cout << "=== Loading data ===" << std::endl;
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Contracted) input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        CSA::Data csaDataFull = CSA::Data::FromBinary(getParameter("CSA (Full graph) input file"));
+        csaDataFull.sortConnectionsAscending();
+        CSA::Data csaDataShortcuts = CSA::Data::FromBinary(getParameter("CSA (ULTRA Shortcuts) input file"));
+        csaDataShortcuts.sortConnectionsAscending();
+        csaDataShortcuts.sortTransferGraphEdgesByTravelTime();
+        RAPTOR::Data raptorDataShortcuts = RAPTOR::Data::FromBinary(getParameter("RAPTOR (ULTRA Shortcuts) input file"));
+        raptorDataShortcuts.useImplicitDepartureBufferTimes();
+        raptorDataShortcuts.sortTransferGraphEdgesByTravelTime();
+        TripBased::Data tripBasedData(getParameter("Trip-Based (ULTRA E2E) input file"));
+        Intermediate::Data intermediateData = Intermediate::Data::FromBinary(getParameter("Intermediate (Full) input file"));
+        std::cout << "Building TimeDependentGraph variants..." << std::endl;
+        TimeDependentGraph tdGraph = TimeDependentGraph::FromIntermediate(intermediateData);
+        TimeDependentGraphClassic tdGraphClassic = TimeDependentGraphClassic::FromIntermediate(intermediateData);
+        CH::CH coreCH(getParameter("Core-CH data (Contracted/ch)"));
+        CH::CH regularCH(getParameter("Regular CH data (CH/ch)"));
+        const TransferGraph outHubs(getParameter("Out-hub file"));
+        const TransferGraph inHubs(getParameter("In-hub file"));
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(coreCH.numVertices(), n);
+
+        struct Result {
+            std::string name;
+            double totalMs = 0.0;
+            std::vector<int> arrivals;
+        };
+        std::vector<Result> all;
+
+        auto bench = [&](const std::string& name, auto runQuery) {
+            Result r{name, 0.0, std::vector<int>()};
+            r.arrivals.reserve(n);
+            Timer t;
+            for (const VertexQuery& q : queries) {
+                r.arrivals.push_back(runQuery(q));
+            }
+            r.totalMs = t.elapsedMilliseconds();
+            std::cout << "[" << name << "] total " << r.totalMs << " ms, avg "
+                      << (r.totalMs / n) << " ms/query" << std::endl;
+            all.push_back(std::move(r));
+        };
+
+        std::cout << "\n=== Running queries (" << n << ") ===" << std::endl;
+
+        {
+            RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers, RAPTOR::NoProfiler, true, false> algo(raptorData, coreCH);
+            bench("MR (Core-CH)", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getEarliestArrivalTime(q.target);
+            });
+        }
+        {
+            RAPTOR::DijkstraRAPTOR<RAPTOR::BucketCHInitialTransfers, RAPTOR::NoProfiler, true, false> algo(raptorData, regularCH);
+            bench("MR (Bucket-CH)", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getEarliestArrivalTime(q.target);
+            });
+        }
+        {
+            CSA::HLCSA<CSA::NoProfiler> algo(csaDataFull, outHubs, inHubs);
+            bench("HL-CSA", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getEarliestArrivalTime(q.target);
+            });
+        }
+        {
+            RAPTOR::HLRAPTOR<RAPTOR::NoProfiler> algo(raptorData, outHubs, inHubs);
+            bench("HL-RAPTOR", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getEarliestArrivalTime(q.target);
+            });
+        }
+        {
+            using TDClassicCoreCH = TimeDependentDijkstra<TimeDependentGraphClassic, TDD::NoProfiler, false, true>;
+            TDClassicCoreCH algo(tdGraphClassic, raptorData.numberOfStops(), &coreCH);
+            bench("TD-Dijkstra (Core-CH)", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getArrivalTime(q.target);
+            });
+        }
+        {
+            using TDClassicBucketCH = TimeDependentDijkstraBucketCH<TimeDependentGraphClassic, TDD::NoProfiler, false, true>;
+            TDClassicBucketCH algo(tdGraphClassic, raptorData.numberOfStops(), &regularCH);
+            bench("TD-Dijkstra (Bucket-CH)", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getArrivalTime(q.target);
+            });
+        }
+        {
+            using TADCoreCH = TransferAwareDijkstra<TimeDependentGraph, TDD::NoProfiler, false, true>;
+            TADCoreCH algo(tdGraph, raptorData.numberOfStops(), &coreCH);
+            bench("TAD (Core-CH)", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getArrivalTime(q.target);
+            });
+        }
+        {
+            using TADBucketCH = TransferAwareDijkstraBucketCH<TimeDependentGraph, TDD::NoProfiler, false, true>;
+            TADBucketCH algo(tdGraph, raptorData.numberOfStops(), &regularCH);
+            bench("TAD (Bucket-CH)", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getArrivalTime(q.target);
+            });
+        }
+        {
+            CSA::ULTRACSA<true, 0, CSA::NoProfiler> algo(csaDataShortcuts, regularCH);
+            bench("ULTRA-CSA (no EP)", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getEarliestArrivalTime(q.target);
+            });
+        }
+        {
+            CSA::ULTRACSA<true, 1, CSA::NoProfiler> algo(csaDataShortcuts, regularCH);
+            bench("ULTRA-CSA (EP)", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getEarliestArrivalTime(q.target);
+            });
+        }
+        {
+            RAPTOR::ULTRARAPTOR<RAPTOR::NoProfiler, false> algo(raptorDataShortcuts, regularCH);
+            bench("ULTRA-RAPTOR", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getEarliestArrivalTime(q.target);
+            });
+        }
+        {
+            RAPTOR::ULTRARAPTOR_prune<RAPTOR::NoProfiler, false> algo(raptorDataShortcuts, regularCH);
+            bench("ULTRA-RAPTOR (EP)", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getEarliestArrivalTime(q.target);
+            });
+        }
+        {
+            TripBased::Query<TripBased::NoProfiler> algo(tripBasedData, regularCH);
+            bench("ULTRA-TB", [&](const VertexQuery& q) {
+                algo.run(q.source, q.departureTime, q.target);
+                return algo.getEarliestArrivalTime();
+            });
+        }
+
+        std::cout << "\n=== Correctness (MR Core-CH as reference) ===" << std::endl;
+        const auto& ref = all[0].arrivals;
+        for (size_t k = 1; k < all.size(); ++k) {
+            const auto& cur = all[k].arrivals;
+            size_t mismatches = 0;
+            int maxDiff = 0;
+            size_t firstMismatchIdx = 0;
+            for (size_t i = 0; i < n; ++i) {
+                if (ref[i] != cur[i]) {
+                    if (mismatches == 0) firstMismatchIdx = i;
+                    ++mismatches;
+                    int d = std::abs(ref[i] - cur[i]);
+                    if (d > maxDiff) maxDiff = d;
+                }
+            }
+            std::cout << "  " << all[k].name << ": ";
+            if (mismatches == 0) {
+                std::cout << "OK (0 mismatches)" << std::endl;
+            } else {
+                std::cout << mismatches << " mismatches, max diff " << maxDiff
+                          << "s, first at query " << firstMismatchIdx
+                          << " (ref=" << ref[firstMismatchIdx]
+                          << ", cur=" << cur[firstMismatchIdx] << ")" << std::endl;
+            }
+        }
+
+        std::cout << "\n=== Summary (ms per query, " << n << " queries) ===" << std::endl;
+        for (const auto& r : all) {
+            std::cout << "  " << r.name << ": " << (r.totalMs / n) << " ms" << std::endl;
+        }
+    }
+};
+
+class CompareOneAlgEP : public ParameterizedCommand {
+public:
+    CompareOneAlgEP(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareOneAlgEP",
+            "Run a single algorithm with 3 variants (unsorted, sorted, EP) on same query set, AggregateProfiler.") {
+        addParameter("Algorithm", "RAPTOR", {"RAPTOR","McRAPTOR","BM-M","BM-FBM","CSA","ULTRA-RAPTOR","ULTRA-McRAPTOR","UBM-M","UBM-FBM","ULTRA-CSA"});
+        addParameter("City label");
+        addParameter("Transitive RAPTOR input file");
+        addParameter("ULTRA Shortcuts RAPTOR input file");
+        addParameter("Mc Shortcuts RAPTOR input file");
+        addParameter("Transitive CSA input file");
+        addParameter("ULTRA Shortcuts CSA input file");
+        addParameter("Regular CH data");
+        addParameter("Number of queries");
+        addParameter("Arrival slack");
+        addParameter("Trip slack");
+    }
+
+    virtual void execute() noexcept {
+        const std::string algo = getParameter("Algorithm");
+        const std::string city = getParameter("City label");
+        const size_t n = getParameter<size_t>("Number of queries");
+        const double aS = getParameter<double>("Arrival slack");
+        const double tS = getParameter<double>("Trip slack");
+
+        auto stats = [](const std::vector<double>& times) {
+            double sum = 0; for (auto t : times) sum += t;
+            const double mean = sum / times.size();
+            double sumSq = 0; for (auto t : times) sumSq += (t - mean) * (t - mean);
+            const double stddev = std::sqrt(sumSq / (times.size() - 1));
+            return std::make_pair(mean / 1000.0, stddev / 1000.0); // us -> ms
+        };
+        const std::string saveDir = "/tmp/per_query_times/" + city;
+        std::system(("mkdir -p '" + saveDir + "'").c_str());
+
+        auto saveTimes = [&saveDir](const std::string& label, const std::vector<double>& times) {
+            std::string safeLabel = label;
+            std::replace(safeLabel.begin(), safeLabel.end(), '/', '_');
+            std::replace(safeLabel.begin(), safeLabel.end(), ' ', '_');
+            std::replace(safeLabel.begin(), safeLabel.end(), '(', '_');
+            std::replace(safeLabel.begin(), safeLabel.end(), ')', '_');
+            const std::string fname = saveDir + "/" + safeLabel + ".txt";
+            std::ofstream f(fname);
+            for (double t : times) f << t << "\n";
+        };
+
+        auto report3 = [&stats, &saveTimes](const std::string& name, const std::vector<double>& tU, const std::vector<double>& tSort, const std::vector<double>& tE) {
+            const auto [meanU, sdU] = stats(tU);
+            const auto [meanS, sdS] = stats(tSort);
+            const auto [meanE, sdE] = stats(tE);
+            std::cout << "[" << name << "]"
+                      << "  unsorted_mean=" << meanU << " sd=" << sdU
+                      << "  sorted_mean="   << meanS << " sd=" << sdS
+                      << "  EP_mean="       << meanE << " sd=" << sdE
+                      << " ms/q" << std::endl;
+            std::cout.flush();
+            saveTimes(name + "__unsorted", tU);
+            saveTimes(name + "__sorted",   tSort);
+            saveTimes(name + "__EP",       tE);
+        };
+
+        auto run3Generic = [n](auto& algo, const auto& queries, auto runFn, std::vector<double>& times) {
+            times.clear();
+            times.reserve(n);
+            for (const auto& q : queries) {
+                Timer t;
+                runFn(algo, q);
+                times.push_back(t.elapsedMicroseconds());
+            }
+        };
+
+        // --- CSA (transitive, stop queries) ---
+        if (algo == "CSA") {
+            CSA::Data data = CSA::Data::FromBinary(getParameter("Transitive CSA input file"));
+            data.sortConnectionsAscending();
+            const std::vector<StopQuery> queries = generateRandomStopQueries(data.numberOfStops(), n);
+            using P = CSA::AggregateProfiler;
+            std::vector<double> tU, tS_, tE;
+            auto runFn = [](auto& a, const StopQuery& q) { a.run(q.source, q.departureTime, q.target); };
+            { CSA::CSA<false, P> a(data); run3Generic(a, queries, runFn, tU); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { CSA::CSA<false, P> a(data); run3Generic(a, queries, runFn, tS_); }
+            { CSA::CSA_prune<false, P> a(data); run3Generic(a, queries, runFn, tE); }
+            report3("CSA (Transitive)", tU, tS_, tE);
+            return;
+        }
+
+        // --- Transitive graph algorithms (use stop queries) ---
+        if (algo == "RAPTOR" || algo == "McRAPTOR" || algo == "BM-M" || algo == "BM-FBM") {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("Transitive RAPTOR input file"));
+            data.useImplicitDepartureBufferTimes();
+            const size_t numStops = data.numberOfStops();
+            const std::vector<StopQuery> queries = generateRandomStopQueries(numStops, n);
+            using P = RAPTOR::AggregateProfiler;
+
+            if (algo == "RAPTOR") {
+                std::vector<double> tU, tS_, tE;
+                auto runFn = [](auto& a, const StopQuery& q) { a.run(q.source, q.departureTime, q.target); };
+                { RAPTOR::RAPTOR<true, P, true, false, false> a(data); run3Generic(a, queries, runFn, tU); }
+                data.sortTransferGraphEdgesByTravelTime();
+                { RAPTOR::RAPTOR<true, P, true, false, false> a(data); run3Generic(a, queries, runFn, tS_); }
+                { RAPTOR::RAPTOR_prune<true, P, true, false, false> a(data); run3Generic(a, queries, runFn, tE); }
+                report3("RAPTOR (Transitive)", tU, tS_, tE);
+            } else if (algo == "McRAPTOR") {
+                std::vector<double> tU, tS_, tE;
+                auto runFn = [](auto& a, const StopQuery& q) { a.run(q.source, q.departureTime, q.target); };
+                { RAPTOR::McRAPTOR<false, true, P> a(data); run3Generic(a, queries, runFn, tU); }
+                data.sortTransferGraphEdgesByTravelTime();
+                { RAPTOR::McRAPTOR<false, true, P> a(data); run3Generic(a, queries, runFn, tS_); }
+                { RAPTOR::McRAPTOR<true, true, P> a(data); run3Generic(a, queries, runFn, tE); }
+                report3("McRAPTOR (Transitive)", tU, tS_, tE);
+            } else if (algo == "BM-M" || algo == "BM-FBM") {
+                std::vector<double> tU, tS_, tE;
+                auto runFn = [aS, tS](auto& a, const StopQuery& q) { a.run(q.source, q.departureTime, q.target, aS, tS); };
+                // unsorted baseline: rev built from unsorted data
+                { RAPTOR::Data revU = data.reverseNetwork();
+                  RAPTOR::BoundedMcRAPTOR<P> a(data, revU); run3Generic(a, queries, runFn, tU); }
+                // sort data; build rev from sorted data and also sort rev so EP on backward graph breaks at the right place
+                data.sortTransferGraphEdgesByTravelTime();
+                RAPTOR::Data rev = data.reverseNetwork();
+                rev.sortTransferGraphEdgesByTravelTime();
+                { RAPTOR::BoundedMcRAPTOR<P> a(data, rev); run3Generic(a, queries, runFn, tS_); }
+                using Fwd  = RAPTOR::ForwardPruningRAPTOR<P>;
+                using FwdP = RAPTOR::ForwardPruningRAPTOR_prune<P>;
+                if (algo == "BM-M") {
+                    RAPTOR::BoundedMcRAPTOR_prune<P, Fwd, RAPTOR::BackwardPruningRAPTOR<P, Fwd>> a(data, rev);
+                    run3Generic(a, queries, runFn, tE);
+                    report3("BM-RAPTOR (M)", tU, tS_, tE);
+                } else {
+                    RAPTOR::BoundedMcRAPTOR_prune<P, FwdP, RAPTOR::BackwardPruningRAPTOR_prune<P, FwdP>> a(data, rev);
+                    run3Generic(a, queries, runFn, tE);
+                    report3("BM-RAPTOR (F+B+M)", tU, tS_, tE);
+                }
+            }
+            return;
+        }
+
+        // --- ULTRA family (use vertex queries with CH for some) ---
+        CH::CH ch(getParameter("Regular CH data"));
+        using P = RAPTOR::AggregateProfiler;
+
+        if (algo == "ULTRA-CSA") {
+            CSA::Data data = CSA::Data::FromBinary(getParameter("ULTRA Shortcuts CSA input file"));
+            data.sortConnectionsAscending();
+            const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
+            using CP = CSA::AggregateProfiler;
+            std::vector<double> tU, tS_, tE;
+            auto runFn = [](auto& a, const VertexQuery& q) { a.run(q.source, q.departureTime, q.target); };
+            { CSA::ULTRACSA<true, 0, CP> a(data, ch); run3Generic(a, queries, runFn, tU); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { CSA::ULTRACSA<true, 0, CP> a(data, ch); run3Generic(a, queries, runFn, tS_); }
+            { CSA::ULTRACSA<true, 1, CP> a(data, ch); run3Generic(a, queries, runFn, tE); }
+            report3("ULTRA-CSA", tU, tS_, tE);
+            return;
+        }
+
+        if (algo == "ULTRA-RAPTOR") {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("ULTRA Shortcuts RAPTOR input file"));
+            data.useImplicitDepartureBufferTimes();
+            const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
+            std::vector<double> tU, tS_, tE;
+            auto runFn = [](auto& a, const VertexQuery& q) { a.run(q.source, q.departureTime, q.target); };
+            { RAPTOR::ULTRARAPTOR<P, false> a(data, ch); run3Generic(a, queries, runFn, tU); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { RAPTOR::ULTRARAPTOR<P, false> a(data, ch); run3Generic(a, queries, runFn, tS_); }
+            { RAPTOR::ULTRARAPTOR_prune<P, false> a(data, ch); run3Generic(a, queries, runFn, tE); }
+            report3("ULTRA-RAPTOR", tU, tS_, tE);
+        } else if (algo == "ULTRA-McRAPTOR") {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("Mc Shortcuts RAPTOR input file"));
+            data.useImplicitDepartureBufferTimes();
+            const size_t numStops = data.numberOfStops();
+            const std::vector<StopQuery> queries = generateRandomStopQueries(numStops, n);
+            std::vector<double> tU, tS_, tE;
+            auto runFn = [](auto& a, const StopQuery& q) { a.run(q.source, q.departureTime, q.target); };
+            { RAPTOR::ULTRAMcRAPTOR<P> a(data, ch); run3Generic(a, queries, runFn, tU); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { RAPTOR::ULTRAMcRAPTOR<P> a(data, ch); run3Generic(a, queries, runFn, tS_); }
+            { RAPTOR::ULTRAMcRAPTOR_prune<P> a(data, ch); run3Generic(a, queries, runFn, tE); }
+            report3("ULTRA-McRAPTOR", tU, tS_, tE);
+        } else if (algo == "UBM-M" || algo == "UBM-FBM") {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("Mc Shortcuts RAPTOR input file"));
+            data.useImplicitDepartureBufferTimes();
+            const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
+            std::vector<double> tU, tS_, tE;
+            auto runFn = [aS, tS](auto& a, const VertexQuery& q) { a.run(q.source, q.departureTime, q.target, aS, tS); };
+            // unsorted baseline
+            { RAPTOR::Data revU = data.reverseNetwork();
+              RAPTOR::UBMRAPTOR<P> a(data, revU, ch); run3Generic(a, queries, runFn, tU); }
+            // sort data; build rev from sorted data and also sort rev
+            data.sortTransferGraphEdgesByTravelTime();
+            RAPTOR::Data rev = data.reverseNetwork();
+            rev.sortTransferGraphEdgesByTravelTime();
+            { RAPTOR::UBMRAPTOR<P> a(data, rev, ch); run3Generic(a, queries, runFn, tS_); }
+            using IT   = RAPTOR::BucketCHInitialTransfers;
+            using Fwd  = RAPTOR::ForwardPruningULTRARAPTOR<P, IT>;
+            using FwdP = RAPTOR::ForwardPruningULTRARAPTOR_prune<P, IT>;
+            if (algo == "UBM-M") {
+                RAPTOR::UBMRAPTOR_prune<P, Fwd, RAPTOR::BackwardPruningULTRARAPTOR<P, IT, Fwd>> a(data, rev, ch);
+                run3Generic(a, queries, runFn, tE);
+                report3("UBM-RAPTOR (M)", tU, tS_, tE);
+            } else {
+                RAPTOR::UBMRAPTOR_prune<P, FwdP, RAPTOR::BackwardPruningULTRARAPTOR_prune<P, IT, FwdP>> a(data, rev, ch);
+                run3Generic(a, queries, runFn, tE);
+                report3("UBM-RAPTOR (F+B+M)", tU, tS_, tE);
+            }
+        }
+    }
+};
+
+// BM-RAPTOR / UBM-RAPTOR phase-level EP comparison: 5 EP placements + 2 baselines, same query set.
+class CompareBMPhasesEP : public ParameterizedCommand {
+public:
+    CompareBMPhasesEP(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareBMPhasesEP",
+            "BM-RAPTOR/UBM-RAPTOR per-phase EP: unsorted, sorted, EP-F, EP-B, EP-FB, EP-FMc, EP-BMc.") {
+        addParameter("Algorithm", "BM-RAPTOR", {"BM-RAPTOR","UBM-RAPTOR"});
+        addParameter("City label");
+        addParameter("Transitive RAPTOR input file");
+        addParameter("Mc Shortcuts RAPTOR input file");
+        addParameter("Regular CH data");
+        addParameter("Number of queries");
+        addParameter("Arrival slack");
+        addParameter("Trip slack");
+    }
+
+    virtual void execute() noexcept {
+        const std::string algo = getParameter("Algorithm");
+        const std::string city = getParameter("City label");
+        const size_t n = getParameter<size_t>("Number of queries");
+        const double aS = getParameter<double>("Arrival slack");
+        const double tS = getParameter<double>("Trip slack");
+
+        auto stats = [](const std::vector<double>& times) {
+            double sum = 0; for (auto t : times) sum += t;
+            const double mean = sum / times.size();
+            double sumSq = 0; for (auto t : times) sumSq += (t - mean) * (t - mean);
+            const double stddev = std::sqrt(sumSq / (times.size() - 1));
+            return std::make_pair(mean / 1000.0, stddev / 1000.0); // us -> ms
+        };
+
+        const std::string saveDir = "/tmp/per_query_times/" + city;
+        std::system(("mkdir -p '" + saveDir + "'").c_str());
+
+        auto saveTimes = [&saveDir](const std::string& label, const std::vector<double>& times) {
+            std::string fname = saveDir + "/" + label + ".txt";
+            std::ofstream f(fname);
+            for (double t : times) f << t << "\n";
+        };
+
+        auto report = [&stats, &saveTimes, &algo](const std::string& variant, const std::vector<double>& times) {
+            const auto [mean, sd] = stats(times);
+            std::cout << "[" << algo << "][" << variant << "]"
+                      << "  mean=" << mean << " ms/q"
+                      << "  sd=" << sd << " ms/q" << std::endl;
+            std::cout.flush();
+            saveTimes(algo + "__" + variant, times);
+        };
+
+        auto runQueries = [n](auto& a, const auto& queries, auto runFn, std::vector<double>& times) {
+            times.clear();
+            times.reserve(n);
+            for (const auto& q : queries) {
+                Timer t;
+                runFn(a, q);
+                times.push_back(t.elapsedMicroseconds());
+            }
+        };
+
+        using P = RAPTOR::AggregateProfiler;
+
+        if (algo == "BM-RAPTOR") {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("Transitive RAPTOR input file"));
+            data.useImplicitDepartureBufferTimes();
+            const std::vector<StopQuery> queries = generateRandomStopQueries(data.numberOfStops(), n);
+            auto runFn = [aS, tS](auto& a, const StopQuery& q) { a.run(q.source, q.departureTime, q.target, aS, tS); };
+
+            using Fwd  = RAPTOR::ForwardPruningRAPTOR<P>;
+            using FwdP = RAPTOR::ForwardPruningRAPTOR_prune<P>;
+            using BwdNoEP_Fwd  = RAPTOR::BackwardPruningRAPTOR<P, Fwd>;
+            using BwdNoEP_FwdP = RAPTOR::BackwardPruningRAPTOR<P, FwdP>;
+            using BwdEP_Fwd  = RAPTOR::BackwardPruningRAPTOR_prune<P, Fwd>;
+            using BwdEP_FwdP = RAPTOR::BackwardPruningRAPTOR_prune<P, FwdP>;
+
+            // unsorted baseline
+            std::vector<double> tU;
+            { RAPTOR::Data d = data; RAPTOR::Data rev = d.reverseNetwork();
+              RAPTOR::BoundedMcRAPTOR<P> a(d, rev); runQueries(a, queries, runFn, tU); }
+            report("unsorted", tU);
+
+            // sort transfer graph once; reverse and sort rev so EP can break on sorted edges
+            data.sortTransferGraphEdgesByTravelTime();
+            RAPTOR::Data rev = data.reverseNetwork();
+            rev.sortTransferGraphEdgesByTravelTime();
+
+            // sorted baseline
+            std::vector<double> tS_;
+            { RAPTOR::BoundedMcRAPTOR<P> a(data, rev); runQueries(a, queries, runFn, tS_); }
+            report("sorted", tS_);
+
+            // EP-F: FwdP + Bwd + Mc-no-EP
+            std::vector<double> tF;
+            { RAPTOR::BoundedMcRAPTOR<P, FwdP, BwdNoEP_FwdP> a(data, rev); runQueries(a, queries, runFn, tF); }
+            report("ep_F", tF);
+
+            // EP-B: Fwd + BwdP + Mc-no-EP
+            std::vector<double> tB;
+            { RAPTOR::BoundedMcRAPTOR<P, Fwd, BwdEP_Fwd> a(data, rev); runQueries(a, queries, runFn, tB); }
+            report("ep_B", tB);
+
+            // EP-FB: FwdP + BwdP + Mc-no-EP
+            std::vector<double> tFB;
+            { RAPTOR::BoundedMcRAPTOR<P, FwdP, BwdEP_FwdP> a(data, rev); runQueries(a, queries, runFn, tFB); }
+            report("ep_FB", tFB);
+
+            // EP-FMc: FwdP + Bwd + Mc-EP
+            std::vector<double> tFMc;
+            { RAPTOR::BoundedMcRAPTOR_prune<P, FwdP, BwdNoEP_FwdP> a(data, rev); runQueries(a, queries, runFn, tFMc); }
+            report("ep_FMc", tFMc);
+
+            // EP-BMc: Fwd + BwdP + Mc-EP
+            std::vector<double> tBMc;
+            { RAPTOR::BoundedMcRAPTOR_prune<P, Fwd, BwdEP_Fwd> a(data, rev); runQueries(a, queries, runFn, tBMc); }
+            report("ep_BMc", tBMc);
+            return;
+        }
+
+        // UBM-RAPTOR
+        CH::CH ch(getParameter("Regular CH data"));
+        RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("Mc Shortcuts RAPTOR input file"));
+        data.useImplicitDepartureBufferTimes();
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(ch.numVertices(), n);
+        auto runFn = [aS, tS](auto& a, const VertexQuery& q) { a.run(q.source, q.departureTime, q.target, aS, tS); };
+
+        using IT = RAPTOR::BucketCHInitialTransfers;
+        using Fwd  = RAPTOR::ForwardPruningULTRARAPTOR<P, IT>;
+        using FwdP = RAPTOR::ForwardPruningULTRARAPTOR_prune<P, IT>;
+        using BwdNoEP_Fwd  = RAPTOR::BackwardPruningULTRARAPTOR<P, IT, Fwd>;
+        using BwdNoEP_FwdP = RAPTOR::BackwardPruningULTRARAPTOR<P, IT, FwdP>;
+        using BwdEP_Fwd  = RAPTOR::BackwardPruningULTRARAPTOR_prune<P, IT, Fwd>;
+        using BwdEP_FwdP = RAPTOR::BackwardPruningULTRARAPTOR_prune<P, IT, FwdP>;
+
+        std::vector<double> tU;
+        { RAPTOR::Data d = data; RAPTOR::Data rev = d.reverseNetwork();
+          RAPTOR::UBMRAPTOR<P> a(d, rev, ch); runQueries(a, queries, runFn, tU); }
+        report("unsorted", tU);
+
+        data.sortTransferGraphEdgesByTravelTime();
+        RAPTOR::Data rev = data.reverseNetwork();
+        rev.sortTransferGraphEdgesByTravelTime();
+
+        std::vector<double> tS_;
+        { RAPTOR::UBMRAPTOR<P> a(data, rev, ch); runQueries(a, queries, runFn, tS_); }
+        report("sorted", tS_);
+
+        std::vector<double> tF;
+        { RAPTOR::UBMRAPTOR<P, FwdP, BwdNoEP_FwdP> a(data, rev, ch); runQueries(a, queries, runFn, tF); }
+        report("ep_F", tF);
+
+        std::vector<double> tB;
+        { RAPTOR::UBMRAPTOR<P, Fwd, BwdEP_Fwd> a(data, rev, ch); runQueries(a, queries, runFn, tB); }
+        report("ep_B", tB);
+
+        std::vector<double> tFB;
+        { RAPTOR::UBMRAPTOR<P, FwdP, BwdEP_FwdP> a(data, rev, ch); runQueries(a, queries, runFn, tFB); }
+        report("ep_FB", tFB);
+
+        std::vector<double> tFMc;
+        { RAPTOR::UBMRAPTOR_prune<P, FwdP, BwdNoEP_FwdP> a(data, rev, ch); runQueries(a, queries, runFn, tFMc); }
+        report("ep_FMc", tFMc);
+
+        std::vector<double> tBMc;
+        { RAPTOR::UBMRAPTOR_prune<P, Fwd, BwdEP_Fwd> a(data, rev, ch); runQueries(a, queries, runFn, tBMc); }
+        report("ep_BMc", tBMc);
+    }
+};
+
+class CompareFullEPTable : public ParameterizedCommand {
+public:
+    CompareFullEPTable(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareFullEPTable",
+            "Per algorithm: unsorted baseline, sorted baseline, sorted+EP, same query set, AggregateProfiler throughout.") {
+        addParameter("RAPTOR (Transitive) input file");
+        addParameter("CSA (Transitive) input file");
+        addParameter("CSA (ULTRA Shortcuts) input file");
+        addParameter("RAPTOR (ULTRA Shortcuts) input file");
+        addParameter("RAPTOR (Mc Shortcuts) input file");
+        addParameter("Regular CH data");
+        addParameter("Number of queries");
+        addParameter("Arrival slack");
+        addParameter("Trip slack");
+    }
+
+    virtual void execute() noexcept {
+        const size_t n = getParameter<size_t>("Number of queries");
+        const double arrivalSlack = getParameter<double>("Arrival slack");
+        const double tripSlack = getParameter<double>("Trip slack");
+        CH::CH ch(getParameter("Regular CH data"));
+        const std::vector<VertexQuery> vertexQueries = generateRandomVertexQueries(ch.numVertices(), n);
+        size_t numStops = [&]() {
+            RAPTOR::Data tmp = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Transitive) input file"));
+            return tmp.numberOfStops();
+        }();
+        const std::vector<StopQuery> stopQueries = generateRandomStopQueries(numStops, n);
+
+        auto report3 = [n](const std::string& name, double tU, double tS, double tE) {
+            std::cout << "[" << name << "]"
+                      << "  unsorted=" << (tU / n) << " ms/q"
+                      << "  sorted=" << (tS / n) << " ms/q"
+                      << "  EP=" << (tE / n) << " ms/q" << std::endl;
+        };
+
+        // 1) RAPTOR (Transitive)
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Transitive) input file"));
+            data.useImplicitDepartureBufferTimes();
+            double tU, tS, tE;
+            { RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, true, false, false> algo(data); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tU = t.elapsedMilliseconds(); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, true, false, false> algo(data); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tS = t.elapsedMilliseconds(); }
+            { RAPTOR::RAPTOR_prune<true, RAPTOR::AggregateProfiler, true, false, false> algo(data); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tE = t.elapsedMilliseconds(); }
+            report3("RAPTOR (Transitive)", tU, tS, tE);
+        }
+
+        // 2) McRAPTOR (Transitive): McRAPTOR<TARGET_PRUNING, TRANSITIVE, PROFILER>
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Transitive) input file"));
+            data.useImplicitDepartureBufferTimes();
+            double tU, tS, tE;
+            { RAPTOR::McRAPTOR<false, true, RAPTOR::AggregateProfiler> algo(data); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tU = t.elapsedMilliseconds(); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { RAPTOR::McRAPTOR<false, true, RAPTOR::AggregateProfiler> algo(data); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tS = t.elapsedMilliseconds(); }
+            { RAPTOR::McRAPTOR<true, true, RAPTOR::AggregateProfiler> algo(data); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tE = t.elapsedMilliseconds(); }
+            report3("McRAPTOR (Transitive)", tU, tS, tE);
+        }
+
+        // 3) BM-RAPTOR (Transitive): M and F+B+M
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Transitive) input file"));
+            data.useImplicitDepartureBufferTimes();
+            const RAPTOR::Data reverseData = data.reverseNetwork();
+            double tU, tS, tE_M, tE_FBM;
+            { RAPTOR::BoundedMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+              tU = t.elapsedMilliseconds(); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { RAPTOR::BoundedMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+              tS = t.elapsedMilliseconds(); }
+            using Prof = RAPTOR::AggregateProfiler;
+            using Fwd  = RAPTOR::ForwardPruningRAPTOR<Prof>;
+            using FwdP = RAPTOR::ForwardPruningRAPTOR_prune<Prof>;
+            { RAPTOR::BoundedMcRAPTOR_prune<Prof, Fwd, RAPTOR::BackwardPruningRAPTOR<Prof, Fwd>> algo(data, reverseData); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+              tE_M = t.elapsedMilliseconds(); }
+            { RAPTOR::BoundedMcRAPTOR_prune<Prof, FwdP, RAPTOR::BackwardPruningRAPTOR_prune<Prof, FwdP>> algo(data, reverseData); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+              tE_FBM = t.elapsedMilliseconds(); }
+            report3("BM-RAPTOR (M)",     tU, tS, tE_M);
+            report3("BM-RAPTOR (F+B+M)", tU, tS, tE_FBM);
+        }
+
+        // 4) CSA (Transitive)
+        {
+            CSA::Data data = CSA::Data::FromBinary(getParameter("CSA (Transitive) input file"));
+            data.sortConnectionsAscending();
+            double tU, tS, tE;
+            { CSA::CSA<false, CSA::AggregateProfiler> algo(data); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tU = t.elapsedMilliseconds(); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { CSA::CSA<false, CSA::AggregateProfiler> algo(data); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tS = t.elapsedMilliseconds(); }
+            { CSA::CSA_prune<false, CSA::AggregateProfiler> algo(data); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tE = t.elapsedMilliseconds(); }
+            report3("CSA (Transitive)", tU, tS, tE);
+        }
+
+        // 5) ULTRA-CSA
+        {
+            CSA::Data data = CSA::Data::FromBinary(getParameter("CSA (ULTRA Shortcuts) input file"));
+            data.sortConnectionsAscending();
+            double tU, tS, tE;
+            { CSA::ULTRACSA<true, 0, CSA::AggregateProfiler> algo(data, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+              tU = t.elapsedMilliseconds(); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { CSA::ULTRACSA<true, 0, CSA::AggregateProfiler> algo(data, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+              tS = t.elapsedMilliseconds(); }
+            { CSA::ULTRACSA<true, 1, CSA::AggregateProfiler> algo(data, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+              tE = t.elapsedMilliseconds(); }
+            report3("ULTRA-CSA", tU, tS, tE);
+        }
+
+        // 6) ULTRA-RAPTOR
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (ULTRA Shortcuts) input file"));
+            data.useImplicitDepartureBufferTimes();
+            double tU, tS, tE;
+            { RAPTOR::ULTRARAPTOR<RAPTOR::AggregateProfiler, false> algo(data, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+              tU = t.elapsedMilliseconds(); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { RAPTOR::ULTRARAPTOR<RAPTOR::AggregateProfiler, false> algo(data, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+              tS = t.elapsedMilliseconds(); }
+            { RAPTOR::ULTRARAPTOR_prune<RAPTOR::AggregateProfiler, false> algo(data, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+              tE = t.elapsedMilliseconds(); }
+            report3("ULTRA-RAPTOR", tU, tS, tE);
+        }
+
+        // 7) ULTRA-McRAPTOR
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Mc Shortcuts) input file"));
+            data.useImplicitDepartureBufferTimes();
+            double tU, tS, tE;
+            { RAPTOR::ULTRAMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, ch); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tU = t.elapsedMilliseconds(); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { RAPTOR::ULTRAMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, ch); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tS = t.elapsedMilliseconds(); }
+            { RAPTOR::ULTRAMcRAPTOR_prune<RAPTOR::AggregateProfiler> algo(data, ch); Timer t;
+              for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+              tE = t.elapsedMilliseconds(); }
+            report3("ULTRA-McRAPTOR", tU, tS, tE);
+        }
+
+        // 8) UBM-RAPTOR: M and F+B+M
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Mc Shortcuts) input file"));
+            data.useImplicitDepartureBufferTimes();
+            const RAPTOR::Data reverseData = data.reverseNetwork();
+            double tU, tS, tE_M, tE_FBM;
+            { RAPTOR::UBMRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+              tU = t.elapsedMilliseconds(); }
+            data.sortTransferGraphEdgesByTravelTime();
+            { RAPTOR::UBMRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+              tS = t.elapsedMilliseconds(); }
+            using Prof = RAPTOR::AggregateProfiler;
+            using IT   = RAPTOR::BucketCHInitialTransfers;
+            using Fwd  = RAPTOR::ForwardPruningULTRARAPTOR<Prof, IT>;
+            using FwdP = RAPTOR::ForwardPruningULTRARAPTOR_prune<Prof, IT>;
+            { RAPTOR::UBMRAPTOR_prune<Prof, Fwd, RAPTOR::BackwardPruningULTRARAPTOR<Prof, IT, Fwd>> algo(data, reverseData, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+              tE_M = t.elapsedMilliseconds(); }
+            { RAPTOR::UBMRAPTOR_prune<Prof, FwdP, RAPTOR::BackwardPruningULTRARAPTOR_prune<Prof, IT, FwdP>> algo(data, reverseData, ch); Timer t;
+              for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target, arrivalSlack, tripSlack);
+              tE_FBM = t.elapsedMilliseconds(); }
+            report3("UBM-RAPTOR (M)",     tU, tS, tE_M);
+            report3("UBM-RAPTOR (F+B+M)", tU, tS, tE_FBM);
+        }
+    }
+};
+
+class CompareSortingEffectAll : public ParameterizedCommand {
+public:
+    CompareSortingEffectAll(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareSortingEffectAll",
+            "For each baseline algorithm, runs once on UNSORTED transfer edges and once on SORTED transfer edges, on the same query set.") {
+        addParameter("RAPTOR (Transitive) input file");
+        addParameter("CSA (Transitive) input file");
+        addParameter("CSA (ULTRA Shortcuts) input file");
+        addParameter("RAPTOR (ULTRA Shortcuts) input file");
+        addParameter("RAPTOR (Mc Shortcuts) input file");
+        addParameter("Regular CH data");
+        addParameter("Number of queries");
+        addParameter("Save queries prefix (\"\" to skip)", "");
+        addParameter("Run mode", "both", {"both", "missing"});
+    }
+
+    virtual void execute() noexcept {
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::string prefix = getParameter("Save queries prefix (\"\" to skip)");
+        const std::string mode = getParameter("Run mode");
+        // For "missing" mode: RAPTOR-family already have UNSORTED from check* commands,
+        // so we only need to run SORTED for them. BM-RAPTOR/UBM-RAPTOR already have
+        // SORTED from check*Stages commands, so we only need UNSORTED for them.
+        const bool runBothForRaptorFamily = (mode == "both");
+        const bool runBothForBMFamily = (mode == "both");
+
+        CH::CH ch(getParameter("Regular CH data"));
+
+        const std::vector<VertexQuery> vertexQueries = generateRandomVertexQueries(ch.numVertices(), n);
+
+        // Pre-load one RAPTOR file just to compute the stop count for stop queries
+        const size_t numStops = [&]() {
+            RAPTOR::Data tmp = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Transitive) input file"));
+            return tmp.numberOfStops();
+        }();
+        const std::vector<StopQuery> stopQueries = generateRandomStopQueries(numStops, n);
+
+        if (!prefix.empty()) {
+            saveVertexQueries(prefix + "_vertex.tsv", vertexQueries);
+            saveStopQueries(prefix + "_stop.tsv", stopQueries);
+            std::cout << "Saved queries to " << prefix << "_vertex.tsv and " << prefix << "_stop.tsv" << std::endl;
+        }
+
+        auto report = [n](const std::string& name, double tUnsorted, double tSorted) {
+            const double pct = 100.0 * (tUnsorted - tSorted) / tUnsorted;
+            std::cout << "[" << name << "]"
+                      << "  unsorted=" << (tUnsorted / n) << " ms/q"
+                      << "  sorted=" << (tSorted / n) << " ms/q"
+                      << "  delta=" << pct << "%" << std::endl;
+        };
+
+        std::cout << "\n=== Transitive graph algorithms ===" << std::endl;
+
+        // 1. RAPTOR (Transitive) — UNSORTED already from checkRAPTORPruning
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Transitive) input file"));
+            data.useImplicitDepartureBufferTimes();
+            double tU = -1, tS = -1;
+            if (runBothForRaptorFamily) {
+                RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, true, false, false> algo(data);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+                tU = t.elapsedMilliseconds();
+            }
+            data.sortTransferGraphEdgesByTravelTime();
+            {
+                RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, true, false, false> algo(data);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tU < 0) std::cout << "[RAPTOR (Transitive)]  sorted=" << (tS / n) << " ms/q  (UNSORTED from prior check command)" << std::endl;
+            else report("RAPTOR (Transitive)", tU, tS);
+        }
+
+        // 2. McRAPTOR (Transitive) — UNSORTED already from checkMcRAPTORPruning
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Transitive) input file"));
+            data.useImplicitDepartureBufferTimes();
+            double tU = -1, tS = -1;
+            if (runBothForRaptorFamily) {
+                RAPTOR::McRAPTOR<true, true, RAPTOR::AggregateProfiler> algo(data);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+                tU = t.elapsedMilliseconds();
+            }
+            data.sortTransferGraphEdgesByTravelTime();
+            {
+                RAPTOR::McRAPTOR<true, true, RAPTOR::AggregateProfiler> algo(data);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tU < 0) std::cout << "[McRAPTOR (Transitive)]  sorted=" << (tS / n) << " ms/q  (UNSORTED from prior check command)" << std::endl;
+            else report("McRAPTOR (Transitive)", tU, tS);
+        }
+
+        // 3. BM-RAPTOR (Transitive), sigma=1.25 — SORTED already from checkBMcRAPTORPruningStages
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Transitive) input file"));
+            data.useImplicitDepartureBufferTimes();
+            const RAPTOR::Data reverseData = data.reverseNetwork();
+            double tU = -1, tS = -1;
+            {
+                RAPTOR::BoundedMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target, 1.25, 1.25);
+                tU = t.elapsedMilliseconds();
+            }
+            if (runBothForBMFamily) {
+                data.sortTransferGraphEdgesByTravelTime();
+                RAPTOR::BoundedMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target, 1.25, 1.25);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tS < 0) std::cout << "[BM-RAPTOR (sigma=1.25)]  unsorted=" << (tU / n) << " ms/q  (SORTED from prior check*Stages command)" << std::endl;
+            else report("BM-RAPTOR (Transitive, sigma=1.25)", tU, tS);
+        }
+
+        // 4. CSA (Transitive) — UNSORTED already from checkCSAPruning
+        {
+            CSA::Data data = CSA::Data::FromBinary(getParameter("CSA (Transitive) input file"));
+            data.sortConnectionsAscending();
+            double tU = -1, tS = -1;
+            if (runBothForRaptorFamily) {
+                CSA::CSA<false, CSA::AggregateProfiler> algo(data);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+                tU = t.elapsedMilliseconds();
+            }
+            data.sortTransferGraphEdgesByTravelTime();
+            {
+                CSA::CSA<false, CSA::AggregateProfiler> algo(data);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tU < 0) std::cout << "[CSA (Transitive)]  sorted=" << (tS / n) << " ms/q  (UNSORTED from prior check command)" << std::endl;
+            else report("CSA (Transitive)", tU, tS);
+        }
+
+        std::cout << "\n=== Stop-level ULTRA shortcuts ===" << std::endl;
+
+        // 5. ULTRA-CSA — UNSORTED already from checkULTRACSAPruning
+        {
+            CSA::Data data = CSA::Data::FromBinary(getParameter("CSA (ULTRA Shortcuts) input file"));
+            data.sortConnectionsAscending();
+            double tU = -1, tS = -1;
+            if (runBothForRaptorFamily) {
+                CSA::ULTRACSA<true, 0, CSA::AggregateProfiler> algo(data, ch);
+                Timer t;
+                for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+                tU = t.elapsedMilliseconds();
+            }
+            data.sortTransferGraphEdgesByTravelTime();
+            {
+                CSA::ULTRACSA<true, 0, CSA::AggregateProfiler> algo(data, ch);
+                Timer t;
+                for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tU < 0) std::cout << "[ULTRA-CSA]  sorted=" << (tS / n) << " ms/q  (UNSORTED from prior check command)" << std::endl;
+            else report("ULTRA-CSA", tU, tS);
+        }
+
+        // 6. ULTRA-RAPTOR — UNSORTED already from checkULTRARAPTORPruning
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (ULTRA Shortcuts) input file"));
+            data.useImplicitDepartureBufferTimes();
+            double tU = -1, tS = -1;
+            if (runBothForRaptorFamily) {
+                RAPTOR::ULTRARAPTOR<RAPTOR::AggregateProfiler, false> algo(data, ch);
+                Timer t;
+                for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+                tU = t.elapsedMilliseconds();
+            }
+            data.sortTransferGraphEdgesByTravelTime();
+            {
+                RAPTOR::ULTRARAPTOR<RAPTOR::AggregateProfiler, false> algo(data, ch);
+                Timer t;
+                for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tU < 0) std::cout << "[ULTRA-RAPTOR]  sorted=" << (tS / n) << " ms/q  (UNSORTED from prior check command)" << std::endl;
+            else report("ULTRA-RAPTOR", tU, tS);
+        }
+
+        std::cout << "\n=== Multi-criteria ULTRA shortcuts ===" << std::endl;
+
+        // 7. UBM-RAPTOR, sigma=1.25 — SORTED already from checkUBMRAPTORPruningStages
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Mc Shortcuts) input file"));
+            data.useImplicitDepartureBufferTimes();
+            const RAPTOR::Data reverseData = data.reverseNetwork();
+            double tU = -1, tS = -1;
+            {
+                RAPTOR::UBMRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData, ch);
+                Timer t;
+                for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target, 1.25, 1.25);
+                tU = t.elapsedMilliseconds();
+            }
+            if (runBothForBMFamily) {
+                data.sortTransferGraphEdgesByTravelTime();
+                RAPTOR::UBMRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData, ch);
+                Timer t;
+                for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target, 1.25, 1.25);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tS < 0) std::cout << "[UBM-RAPTOR (sigma=1.25)]  unsorted=" << (tU / n) << " ms/q  (SORTED from prior check*Stages command)" << std::endl;
+            else report("UBM-RAPTOR (sigma=1.25)", tU, tS);
+        }
+
+        // 8. BM-RAPTOR, sigma=1.0 (for F+B+M row baseline) — SORTED already from checkBMcRAPTORPruningStages
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Transitive) input file"));
+            data.useImplicitDepartureBufferTimes();
+            const RAPTOR::Data reverseData = data.reverseNetwork();
+            double tU = -1, tS = -1;
+            {
+                RAPTOR::BoundedMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target, 1.0, 1.0);
+                tU = t.elapsedMilliseconds();
+            }
+            if (runBothForBMFamily) {
+                data.sortTransferGraphEdgesByTravelTime();
+                RAPTOR::BoundedMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target, 1.0, 1.0);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tS < 0) std::cout << "[BM-RAPTOR (sigma=1.0)]  unsorted=" << (tU / n) << " ms/q  (SORTED from prior check*Stages command)" << std::endl;
+            else report("BM-RAPTOR (Transitive, sigma=1.0)", tU, tS);
+        }
+
+        // 9. UBM-RAPTOR, sigma=1.0 (for F+B+M row baseline) — SORTED already from checkUBMRAPTORPruningStages
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Mc Shortcuts) input file"));
+            data.useImplicitDepartureBufferTimes();
+            const RAPTOR::Data reverseData = data.reverseNetwork();
+            double tU = -1, tS = -1;
+            {
+                RAPTOR::UBMRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData, ch);
+                Timer t;
+                for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target, 1.0, 1.0);
+                tU = t.elapsedMilliseconds();
+            }
+            if (runBothForBMFamily) {
+                data.sortTransferGraphEdgesByTravelTime();
+                RAPTOR::UBMRAPTOR<RAPTOR::AggregateProfiler> algo(data, reverseData, ch);
+                Timer t;
+                for (const auto& q : vertexQueries) algo.run(q.source, q.departureTime, q.target, 1.0, 1.0);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tS < 0) std::cout << "[UBM-RAPTOR (sigma=1.0)]  unsorted=" << (tU / n) << " ms/q  (SORTED from prior check*Stages command)" << std::endl;
+            else report("UBM-RAPTOR (sigma=1.0)", tU, tS);
+        }
+
+        // 10. ULTRA-McRAPTOR — UNSORTED already from checkULTRAMcRAPTORPruning
+        {
+            RAPTOR::Data data = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Mc Shortcuts) input file"));
+            data.useImplicitDepartureBufferTimes();
+            double tU = -1, tS = -1;
+            if (runBothForRaptorFamily) {
+                RAPTOR::ULTRAMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, ch);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+                tU = t.elapsedMilliseconds();
+            }
+            data.sortTransferGraphEdgesByTravelTime();
+            {
+                RAPTOR::ULTRAMcRAPTOR<RAPTOR::AggregateProfiler> algo(data, ch);
+                Timer t;
+                for (const auto& q : stopQueries) algo.run(q.source, q.departureTime, q.target);
+                tS = t.elapsedMilliseconds();
+            }
+            if (tU < 0) std::cout << "[ULTRA-McRAPTOR]  sorted=" << (tS / n) << " ms/q  (UNSORTED from prior check command)" << std::endl;
+            else report("ULTRA-McRAPTOR", tU, tS);
+        }
+    }
+};
+
+class CompareCSAEP : public ParameterizedCommand {
+public:
+    CompareCSAEP(BasicShell& shell) :
+        ParameterizedCommand(shell, "compareCSAEP",
+            "Compares transitive CSA and ULTRA-CSA with and without Early Pruning. Multiple repetitions for noise reduction.") {
+        addParameter("Transitive CSA input file");
+        addParameter("ULTRA-CSA input file");
+        addParameter("CH data (for ULTRA-CSA)");
+        addParameter("Number of queries");
+        addParameter("Repetitions", "5");
+    }
+
+    virtual void execute() noexcept {
+        std::cout << "=== Loading data ===" << std::endl;
+        CSA::Data csaTrans = CSA::Data::FromBinary(getParameter("Transitive CSA input file"));
+        csaTrans.sortConnectionsAscending();
+        CSA::Data csaTransSorted = CSA::Data::FromBinary(getParameter("Transitive CSA input file"));
+        csaTransSorted.sortConnectionsAscending();
+        csaTransSorted.sortTransferGraphEdgesByTravelTime();
+
+        CSA::Data csaULTRA = CSA::Data::FromBinary(getParameter("ULTRA-CSA input file"));
+        csaULTRA.sortConnectionsAscending();
+        CSA::Data csaULTRASorted = CSA::Data::FromBinary(getParameter("ULTRA-CSA input file"));
+        csaULTRASorted.sortConnectionsAscending();
+        csaULTRASorted.sortTransferGraphEdgesByTravelTime();
+        CH::CH ch(getParameter("CH data (for ULTRA-CSA)"));
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const size_t reps = getParameter<size_t>("Repetitions");
+        const std::vector<StopQuery> stopQueries = generateRandomStopQueries(csaTrans.numberOfStops(), n);
+        const std::vector<VertexQuery> vertexQueries = generateRandomVertexQueries(ch.numVertices(), n);
+
+        auto repeatBench = [&](const std::string& name, auto runOne) {
+            std::vector<double> times;
+            times.reserve(reps);
+            std::vector<int> firstArrivals;
+            for (size_t r = 0; r < reps; ++r) {
+                Timer t;
+                std::vector<int> arrivals = runOne();
+                const double ms = t.elapsedMilliseconds();
+                times.push_back(ms);
+                if (r == 0) firstArrivals = std::move(arrivals);
+                std::cout << "[" << name << "] rep " << (r + 1) << "/" << reps
+                          << ": " << ms << " ms total, " << (ms / n) << " ms/query" << std::endl;
+            }
+            double minT = times[0], maxT = times[0], sumT = 0;
+            for (double t : times) { minT = std::min(minT, t); maxT = std::max(maxT, t); sumT += t; }
+            const double avgT = sumT / reps;
+            std::cout << "[" << name << "] SUMMARY"
+                      << " min=" << (minT / n) << " ms/query"
+                      << " avg=" << (avgT / n) << " ms/query"
+                      << " max=" << (maxT / n) << " ms/query"
+                      << std::endl;
+            return std::make_pair(minT / n, std::move(firstArrivals));
+        };
+
+        std::cout << "\n=== Transitive CSA ===" << std::endl;
+        auto [transNoEP, transNoEParr] = repeatBench("Transitive CSA (no EP)", [&]() {
+            CSA::CSA<false, CSA::NoProfiler> algo(csaTrans);
+            std::vector<int> arrivals;
+            arrivals.reserve(n);
+            for (const StopQuery& q : stopQueries) {
+                algo.run(q.source, q.departureTime, q.target);
+                arrivals.push_back(algo.getEarliestArrivalTime(q.target));
+            }
+            return arrivals;
+        });
+        auto [transEP, transEParr] = repeatBench("Transitive CSA (EP)", [&]() {
+            CSA::CSA_prune<false, CSA::NoProfiler> algo(csaTransSorted);
+            std::vector<int> arrivals;
+            arrivals.reserve(n);
+            for (const StopQuery& q : stopQueries) {
+                algo.run(q.source, q.departureTime, q.target);
+                arrivals.push_back(algo.getEarliestArrivalTime(q.target));
+            }
+            return arrivals;
+        });
+
+        std::cout << "\n=== ULTRA-CSA ===" << std::endl;
+        auto [ultraNoEP, ultraNoEParr] = repeatBench("ULTRA-CSA (no EP)", [&]() {
+            CSA::ULTRACSA<true, 0, CSA::NoProfiler> algo(csaULTRA, ch);
+            std::vector<int> arrivals;
+            arrivals.reserve(n);
+            for (const VertexQuery& q : vertexQueries) {
+                algo.run(q.source, q.departureTime, q.target);
+                arrivals.push_back(algo.getEarliestArrivalTime(q.target));
+            }
+            return arrivals;
+        });
+        auto [ultraEP, ultraEParr] = repeatBench("ULTRA-CSA (EP)", [&]() {
+            CSA::ULTRACSA<true, 1, CSA::NoProfiler> algo(csaULTRASorted, ch);
+            std::vector<int> arrivals;
+            arrivals.reserve(n);
+            for (const VertexQuery& q : vertexQueries) {
+                algo.run(q.source, q.departureTime, q.target);
+                arrivals.push_back(algo.getEarliestArrivalTime(q.target));
+            }
+            return arrivals;
+        });
+
+        std::cout << "\n=== Correctness ===" << std::endl;
+        size_t mTrans = 0;
+        for (size_t i = 0; i < n; ++i) if (transNoEParr[i] != transEParr[i]) ++mTrans;
+        std::cout << "Transitive CSA (no EP) vs (EP): " << (mTrans == 0 ? "OK (0 mismatches)" : std::to_string(mTrans) + " mismatches") << std::endl;
+        size_t mUltra = 0;
+        for (size_t i = 0; i < n; ++i) if (ultraNoEParr[i] != ultraEParr[i]) ++mUltra;
+        std::cout << "ULTRA-CSA (no EP) vs (EP): " << (mUltra == 0 ? "OK (0 mismatches)" : std::to_string(mUltra) + " mismatches") << std::endl;
+
+        std::cout << "\n=== Min-of-" << reps << " summary (ms per query) ===" << std::endl;
+        std::cout << "  Transitive CSA  (no EP): " << transNoEP << std::endl;
+        std::cout << "  Transitive CSA  (EP)   : " << transEP << std::endl;
+        std::cout << "  ULTRA-CSA       (no EP): " << ultraNoEP << std::endl;
+        std::cout << "  ULTRA-CSA       (EP)   : " << ultraEP << std::endl;
+        const double sTrans = 100.0 * (transNoEP - transEP) / transNoEP;
+        const double sUltra = 100.0 * (ultraNoEP - ultraEP) / ultraNoEP;
+        std::cout << "  Transitive CSA  speedup: " << sTrans << "%" << std::endl;
+        std::cout << "  ULTRA-CSA       speedup: " << sUltra << "%" << std::endl;
+    }
+};
+
+class CheckMCRParetoEquivalence : public ParameterizedCommand {
+public:
+    CheckMCRParetoEquivalence(BasicShell& shell) :
+        ParameterizedCommand(shell, "checkMCRParetoEquivalence",
+            "Runs MCR(Core-CH) and MCR(Bucket-CH) on the same query set and checks Pareto-set equality.") {
+        addParameter("RAPTOR (Contracted) input file");
+        addParameter("Core-CH data (Contracted/ch)");
+        addParameter("Regular CH data (CH/ch)");
+        addParameter("Number of queries");
+    }
+
+    virtual void execute() noexcept {
+        std::cout << "=== Loading data ===" << std::endl;
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR (Contracted) input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        CH::CH coreCH(getParameter("Core-CH data (Contracted/ch)"));
+        CH::CH regularCH(getParameter("Regular CH data (CH/ch)"));
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries = generateRandomVertexQueries(coreCH.numVertices(), n);
+
+        std::cout << "\n=== Running MCR (Core-CH) on " << n << " queries ===" << std::endl;
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> coreResults(n);
+        {
+            RAPTOR::MCR<true, RAPTOR::NoProfiler, RAPTOR::CoreCHInitialTransfers> algo(raptorData, coreCH);
+            for (size_t i = 0; i < n; ++i) {
+                const VertexQuery& q = queries[i];
+                algo.run(q.source, q.departureTime, q.target);
+                coreResults[i] = algo.getResults();
+            }
+        }
+
+        std::cout << "=== Running MCR (Bucket-CH) on " << n << " queries ===" << std::endl;
+        std::vector<std::vector<RAPTOR::WalkingParetoLabel>> bucketResults(n);
+        {
+            RAPTOR::BucketCHInitialTransfers bucketIT(regularCH.forward, regularCH.backward, raptorData.numberOfStops(), Weight);
+            RAPTOR::MCR<true, RAPTOR::NoProfiler, RAPTOR::BucketCHInitialTransfers> algo(raptorData, std::move(bucketIT));
+            for (size_t i = 0; i < n; ++i) {
+                const VertexQuery& q = queries[i];
+                algo.run(q.source, q.departureTime, q.target);
+                bucketResults[i] = algo.getResults();
+            }
+        }
+
+        std::cout << "\n=== Comparing Pareto sets ===" << std::endl;
+        size_t totalQueries = 0;
+        size_t sizeMismatches = 0;
+        size_t labelMismatches = 0;
+        size_t firstMismatchIdx = n;
+        size_t totalLabels = 0;
+        size_t emptyBoth = 0;
+        for (size_t i = 0; i < n; ++i) {
+            auto a = coreResults[i];
+            auto b = bucketResults[i];
+            std::sort(a.begin(), a.end());
+            std::sort(b.begin(), b.end());
+            totalLabels += a.size();
+            if (a.empty() && b.empty()) {
+                ++emptyBoth;
+                continue;
+            }
+            ++totalQueries;
+            if (a.size() != b.size()) {
+                ++sizeMismatches;
+                if (firstMismatchIdx == n) firstMismatchIdx = i;
+                continue;
+            }
+            bool diff = false;
+            for (size_t k = 0; k < a.size(); ++k) {
+                if (!(a[k] == b[k])) {
+                    diff = true;
+                    break;
+                }
+            }
+            if (diff) {
+                ++labelMismatches;
+                if (firstMismatchIdx == n) firstMismatchIdx = i;
+            }
+        }
+
+        std::cout << "Queries with non-empty Pareto set: " << totalQueries << " / " << n << std::endl;
+        std::cout << "Queries with both empty: " << emptyBoth << std::endl;
+        std::cout << "Total labels (Core-CH): " << totalLabels << std::endl;
+        std::cout << "Pareto-set size mismatches: " << sizeMismatches << std::endl;
+        std::cout << "Pareto-set label mismatches (same size, different content): " << labelMismatches << std::endl;
+        if (sizeMismatches == 0 && labelMismatches == 0) {
+            std::cout << "RESULT: OK - MCR(Core-CH) and MCR(Bucket-CH) produce identical Pareto sets on all " << n << " queries." << std::endl;
+        } else {
+            std::cout << "RESULT: FAIL - first divergence at query " << firstMismatchIdx << std::endl;
+            const VertexQuery& q = queries[firstMismatchIdx];
+            std::cout << "  Query: src=" << q.source << " tgt=" << q.target << " dep=" << q.departureTime << std::endl;
+            std::cout << "  Core-CH Pareto set (" << coreResults[firstMismatchIdx].size() << " labels):" << std::endl;
+            for (const auto& l : coreResults[firstMismatchIdx]) {
+                std::cout << "    " << l << std::endl;
+            }
+            std::cout << "  Bucket-CH Pareto set (" << bucketResults[firstMismatchIdx].size() << " labels):" << std::endl;
+            for (const auto& l : bucketResults[firstMismatchIdx]) {
+                std::cout << "    " << l << std::endl;
+            }
+        }
+    }
+};
+
+class ExportTransferGraphText : public ParameterizedCommand {
+public:
+    ExportTransferGraphText(BasicShell& shell) :
+        ParameterizedCommand(shell, "exportTransferGraphText",
+            "Exports a TransferGraph to text format (src dst travelTime per line, for hl_trans).") {
+        addParameter("Graph input file (binary, e.g. ../Networks/.../csa.binary.graph)");
+        addParameter("Output text file");
+    }
+
+    virtual void execute() noexcept {
+        const std::string in = getParameter("Graph input file (binary, e.g. ../Networks/.../csa.binary.graph)");
+        const std::string out = getParameter("Output text file");
+        TransferGraph g(in);
+        std::ofstream f(out);
+        Assert(f.is_open(), "cannot open " << out);
+        const size_t numV = g.numVertices();
+        size_t numE = 0;
+        for (const Vertex u : g.vertices()) {
+            for (const Edge e : g.edgesFrom(u)) {
+                f << u << " " << g.get(ToVertex, e) << " " << g.get(TravelTime, e) << "\n";
+                ++numE;
+            }
+        }
+        std::cout << "Exported " << numV << " vertices, " << numE << " edges to " << out << std::endl;
+    }
+};
+
+class ImportHubsFromText : public ParameterizedCommand {
+public:
+    ImportHubsFromText(BasicShell& shell) :
+        ParameterizedCommand(shell, "importHubsFromText",
+            "Reads hl_trans 'hubs' output and writes two TransferGraph binaries (out-hubs, in-hubs).") {
+        addParameter("hl_trans hubs output file");
+        addParameter("Number of vertices");
+        addParameter("Out-hubs output binary basename");
+        addParameter("In-hubs output binary basename");
+    }
+
+    virtual void execute() noexcept {
+        const std::string in = getParameter("hl_trans hubs output file");
+        const size_t numV = getParameter<size_t>("Number of vertices");
+        const std::string outOut = getParameter("Out-hubs output binary basename");
+        const std::string outIn = getParameter("In-hubs output binary basename");
+
+        EdgeList<WithCoordinates, WithTravelTime> outEdges;
+        EdgeList<WithCoordinates, WithTravelTime> inEdges;
+        outEdges.addVertices(numV);
+        inEdges.addVertices(numV);
+
+        std::ifstream f(in);
+        Assert(f.is_open(), "cannot open " << in);
+        std::string line;
+        size_t numOut = 0;
+        size_t numIn = 0;
+        size_t skipped = 0;
+        while (std::getline(f, line)) {
+            if (line.empty()) continue;
+            char type = line[0];
+            std::istringstream ss(line.substr(2));
+            long long a, b, len;
+            ss >> a >> b >> len;
+            if (!ss) { ++skipped; continue; }
+            if (type == 'o') {
+                // node a → out-hub b with distance len
+                outEdges.addEdge(Vertex(a), Vertex(b)).set(TravelTime, int(len));
+                ++numOut;
+            } else if (type == 'i') {
+                // in-hub a → node b with distance len  ⇒  store edge "stop b ← hub a" indexed as edges from b in inHubs (reverse direction)
+                inEdges.addEdge(Vertex(b), Vertex(a)).set(TravelTime, int(len));
+                ++numIn;
+            } else {
+                ++skipped;
+            }
+        }
+
+        TransferGraph outHubGraph;
+        TransferGraph inHubGraph;
+        Graph::move(std::move(outEdges), outHubGraph);
+        Graph::move(std::move(inEdges), inHubGraph);
+        outHubGraph.writeBinary(outOut);
+        inHubGraph.writeBinary(outIn);
+
+        std::cout << "Out-hubs: " << numOut << " arcs across " << numV << " vertices -> " << outOut << std::endl;
+        std::cout << "In-hubs:  " << numIn  << " arcs across " << numV << " vertices -> " << outIn << std::endl;
+        if (skipped) std::cout << "Skipped " << skipped << " non-hub lines (likely 'c' transitive closure)." << std::endl;
     }
 };
 

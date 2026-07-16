@@ -16,13 +16,15 @@
 #include "../../DataStructures/Container/ExternalKHeap.h"
 
 namespace RAPTOR {
-    template<bool TARGET_PRUNING, typename PROFILER = NoProfiler>
+
+    template<bool TARGET_PRUNING, typename PROFILER = NoProfiler, typename INITIAL_TRANSFERS = CoreCHInitialTransfers>
     class MCR {
 
     public:
         static constexpr bool TargetPruning = TARGET_PRUNING;
         using Profiler = PROFILER;
-        using Type = MCR<TargetPruning, Profiler>;
+        using InitialTransferType = INITIAL_TRANSFERS;
+        using Type = MCR<TargetPruning, Profiler, InitialTransferType>;
         using InitialTransferGraph = CHGraph;
         using SourceType = Vertex;
 
@@ -138,6 +140,26 @@ namespace RAPTOR {
         MCR(const Data& data, const CH::CH& chData, const Profiler& profilerTemplate = Profiler()) :
             data(data),
             initialTransfers(chData, FORWARD, data.numberOfStops()),
+            stopsUpdatedByRoute(data.numberOfStops() + 1),
+            stopsUpdatedByTransfer(data.numberOfStops() + 1),
+            routesServingUpdatedStops(data.numberOfRoutes()),
+            sourceVertex(noVertex),
+            targetVertex(noVertex),
+            targetStop(noStop),
+            sourceDepartureTime(intMax),
+            dijkstraBags(data.transferGraph.numVertices()),
+            profiler(profilerTemplate) {
+            Assert(data.hasImplicitBufferTimes(), "Departure buffer times have to be implicit!");
+            profiler.registerExtraRounds({EXTRA_ROUND_CLEAR, EXTRA_ROUND_INITIALIZATION});
+            profiler.registerPhases({PHASE_INITIALIZATION, PHASE_COLLECT, PHASE_SCAN, PHASE_TRANSFERS});
+            profiler.registerMetrics({METRIC_ROUTES, METRIC_ROUTE_SEGMENTS, METRIC_VERTICES, METRIC_EDGES, METRIC_STOPS_BY_TRIP, METRIC_STOPS_BY_TRANSFER});
+            profiler.initialize();
+        }
+
+        // Alternative constructor accepting a pre-built initial-transfer engine (e.g. BucketCH).
+        MCR(const Data& data, InitialTransferType&& it, const Profiler& profilerTemplate = Profiler()) :
+            data(data),
+            initialTransfers(std::move(it)),
             stopsUpdatedByRoute(data.numberOfStops() + 1),
             stopsUpdatedByTransfer(data.numberOfStops() + 1),
             routesServingUpdatedStops(data.numberOfRoutes()),
@@ -461,7 +483,7 @@ namespace RAPTOR {
     private:
         const Data& data;
 
-        CoreCHInitialTransfers initialTransfers;
+        InitialTransferType initialTransfers;
 
         std::vector<Round> rounds;
 

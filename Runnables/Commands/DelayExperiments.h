@@ -20,6 +20,8 @@
 #include "../../DataStructures/Graph/TimeDependentGraph.h"
 #include "../../DataStructures/Intermediate/Data.h"
 #include "../../Algorithms/RAPTOR/ULTRARAPTOR.h"
+#include "../../Algorithms/RAPTOR/HLRAPTOR.h"
+#include "../../Algorithms/CSA/HLCSA.h"
 
 // CSA delay support
 #include "../../DataStructures/CSA/DelayData.h"
@@ -37,6 +39,7 @@
 
 #include "../../Algorithms/Dijkstra/TransferAwareDijkstraBucketCH.h"
 #include "../../Algorithms/Dijkstra/TimeDependentDijkstraBucketCH.h"
+#include "../../Algorithms/Dijkstra/TimeDependentDijkstra.h"
 
 using namespace Shell;
 
@@ -645,6 +648,233 @@ inline void printTDQuality(
 } // namespace DelayHelpers
 
 // ═══════════════════════════════════════════════════════════════════════════
+//  PROJECTION COMMAND: event-level → stop-level
+// ═══════════════════════════════════════════════════════════════════════════
+
+class ProjectEventToStopShortcuts : public ParameterizedCommand {
+public:
+    ProjectEventToStopShortcuts(BasicShell& shell) :
+        ParameterizedCommand(shell, "projectEventToStopShortcuts",
+            "Project event-level D-ULTRA shortcuts onto stop pairs (Eq. 2-3 in the paper); save resulting stop-level transfer graph and report timing.") {
+        addParameter("Trip-Based DelayData file");
+        addParameter("Output transfer graph file");
+    }
+
+    virtual void execute() noexcept {
+        TripBased::DelayData delayData(getParameter("Trip-Based DelayData file"));
+        delayData.printInfo();
+
+        const TripBased::Data& tbData = delayData.data;
+        const RAPTOR::Data& raptorData = tbData.raptorData;
+        const auto& delayGraph = delayData.stopEventGraph;
+        const size_t numStops = raptorData.numberOfStops();
+
+        std::cout << "Projecting " << delayGraph.numEdges() << " event-level shortcuts on "
+                  << delayGraph.numVertices() << " stop events to stop level..." << std::endl;
+
+        Timer t;
+        Intermediate::TransferGraph stopGraph;
+        stopGraph.addVertices(numStops);
+        for (size_t i = 0; i < numStops; i++) {
+            stopGraph.set(Coordinates, Vertex(i),
+                raptorData.transferGraph.get(Coordinates, Vertex(i)));
+        }
+
+        for (Vertex from(0); from < delayGraph.numVertices(); from++) {
+            if (static_cast<size_t>(from) >= tbData.numberOfStopEvents()) continue;
+            const StopId fromStop = DelayHelpers::stopOfEvent(tbData, StopEventId(from));
+            if (static_cast<size_t>(fromStop) >= numStops) continue;
+
+            for (const Edge edge : delayGraph.edgesFrom(from)) {
+                const Vertex to = delayGraph.get(ToVertex, edge);
+                if (static_cast<size_t>(to) >= tbData.numberOfStopEvents()) continue;
+                const StopId toStop = DelayHelpers::stopOfEvent(tbData, StopEventId(to));
+                if (static_cast<size_t>(toStop) >= numStops) continue;
+                if (fromStop == toStop) continue;
+
+                const int travelTime = delayGraph.get(TravelTime, edge);
+
+                const size_t prevEdgeCount = stopGraph.numEdges();
+                const Edge newEdge = stopGraph.findOrAddEdge(Vertex(fromStop), Vertex(toStop));
+                if (stopGraph.numEdges() != prevEdgeCount) {
+                    stopGraph.set(TravelTime, newEdge, travelTime);
+                } else {
+                    stopGraph.set(TravelTime, newEdge,
+                        std::min(stopGraph.get(TravelTime, newEdge), travelTime));
+                }
+            }
+        }
+        stopGraph.packEdges();
+        const double elapsedMs = t.elapsedMilliseconds();
+
+        std::cout << "Projection time: " << (elapsedMs / 1000.0) << " s" << std::endl;
+        std::cout << "Stop-level edges: " << stopGraph.numEdges() << std::endl;
+        std::cout << "Resulting stop-level transfer graph:" << std::endl;
+        stopGraph.printAnalysis();
+
+        const std::string outFile = getParameter("Output transfer graph file");
+        stopGraph.writeBinary(outFile);
+        std::cout << "Wrote stop-level transfer graph to " << outFile << std::endl;
+    }
+};
+
+class ProjectClassicEventToStopShortcuts : public ParameterizedCommand {
+public:
+    ProjectClassicEventToStopShortcuts(BasicShell& shell) :
+        ParameterizedCommand(shell, "projectClassicEventToStopShortcuts",
+            "Project classical (non-delay) ULTRA-TB event-level shortcuts onto stop pairs; save resulting stop-level transfer graph and report timing.") {
+        addParameter("Trip-Based data file");
+        addParameter("Output transfer graph file");
+    }
+
+    virtual void execute() noexcept {
+        TripBased::Data tbData(getParameter("Trip-Based data file"));
+        tbData.printInfo();
+
+        const RAPTOR::Data& raptorData = tbData.raptorData;
+        const auto& seg = tbData.stopEventGraph;
+        const size_t numStops = raptorData.numberOfStops();
+
+        std::cout << "Projecting " << seg.numEdges() << " event-level shortcuts on "
+                  << seg.numVertices() << " stop events to stop level..." << std::endl;
+
+        Timer t;
+        Intermediate::TransferGraph stopGraph;
+        stopGraph.addVertices(numStops);
+        for (size_t i = 0; i < numStops; i++) {
+            stopGraph.set(Coordinates, Vertex(i),
+                raptorData.transferGraph.get(Coordinates, Vertex(i)));
+        }
+
+        for (Vertex from(0); from < seg.numVertices(); from++) {
+            if (static_cast<size_t>(from) >= tbData.numberOfStopEvents()) continue;
+            const StopId fromStop = DelayHelpers::stopOfEvent(tbData, StopEventId(from));
+            if (static_cast<size_t>(fromStop) >= numStops) continue;
+
+            for (const Edge edge : seg.edgesFrom(from)) {
+                const Vertex to = seg.get(ToVertex, edge);
+                if (static_cast<size_t>(to) >= tbData.numberOfStopEvents()) continue;
+                const StopId toStop = DelayHelpers::stopOfEvent(tbData, StopEventId(to));
+                if (static_cast<size_t>(toStop) >= numStops) continue;
+                if (fromStop == toStop) continue;
+
+                const int travelTime = seg.get(TravelTime, edge);
+
+                const size_t prevEdgeCount = stopGraph.numEdges();
+                const Edge newEdge = stopGraph.findOrAddEdge(Vertex(fromStop), Vertex(toStop));
+                if (stopGraph.numEdges() != prevEdgeCount) {
+                    stopGraph.set(TravelTime, newEdge, travelTime);
+                } else {
+                    stopGraph.set(TravelTime, newEdge,
+                        std::min(stopGraph.get(TravelTime, newEdge), travelTime));
+                }
+            }
+        }
+        stopGraph.packEdges();
+        const double elapsedMs = t.elapsedMilliseconds();
+
+        std::cout << "Projection time: " << (elapsedMs / 1000.0) << " s" << std::endl;
+        std::cout << "Stop-level edges: " << stopGraph.numEdges() << std::endl;
+        std::cout << "Resulting stop-level transfer graph:" << std::endl;
+        stopGraph.printAnalysis();
+
+        const std::string outFile = getParameter("Output transfer graph file");
+        stopGraph.writeBinary(outFile);
+        std::cout << "Wrote stop-level transfer graph to " << outFile << std::endl;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  EXTRA BENCH: HL-RAPTOR, HL-CSA, MR (Bucket-CH) on delayed data
+// ═══════════════════════════════════════════════════════════════════════════
+class MeasureExtraDelayQueries : public ParameterizedCommand {
+public:
+    MeasureExtraDelayQueries(BasicShell& shell) :
+        ParameterizedCommand(shell, "measureExtraDelayQueries",
+            "Measures HL-RAPTOR, HL-CSA, MR(Bucket-CH) on the same delayed timetable as measureDelayULTRACSAQueryPerformance.") {
+        addParameter("Dijkstra RAPTOR data");
+        addParameter("Trip-Based DelayData");
+        addParameter("Bucket CH data");
+        addParameter("Out-hub file");
+        addParameter("In-hub file");
+        addParameter("Update log file");
+        addParameter("Number of queries");
+        addParameter("Start time", "13:00:00");
+        addParameter("End time", "14:00:00");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data dijkstraRaptorData(getParameter("Dijkstra RAPTOR data"));
+        dijkstraRaptorData.useImplicitDepartureBufferTimes();
+        dijkstraRaptorData.printInfo();
+
+        TripBased::DelayData delayData(getParameter("Trip-Based DelayData"));
+        delayData.printInfo();
+
+        CH::CH bucketCH(getParameter("Bucket CH data"));
+        const TransferGraph outHubs(getParameter("Out-hub file"));
+        const TransferGraph inHubs(getParameter("In-hub file"));
+
+        const int startTime = String::parseSeconds(getParameter("Start time"));
+        const int endTime   = String::parseSeconds(getParameter("End time"));
+
+        TripBased::DelayUpdateSimulator delayUpdater(delayData, getParameter("Update log file"));
+        delayUpdater.applyUpdatesUntil(startTime, true);
+        const TripBased::DelayQueryData& queryData = delayUpdater.getQueryData();
+
+        RAPTOR::Data delayedRaptorData = queryData.tripData.raptorData;
+        Graph::move(std::move(dijkstraRaptorData.transferGraph),
+                    delayedRaptorData.transferGraph);
+
+        Intermediate::TransferGraph emptyGraph;
+        emptyGraph.addVertices(delayedRaptorData.numberOfStops());
+        CSA::Data csaData = DelayHelpers::buildCSADataWithShortcuts(delayedRaptorData, emptyGraph);
+        csaData.sortConnectionsAscending();
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const std::vector<VertexQuery> queries =
+            generateRandomVertexQueries(bucketCH.numVertices(), n, startTime, endTime);
+
+        std::cout << "\n--- MR (Bucket-CH) ---" << std::endl;
+        RAPTOR::DijkstraRAPTOR<RAPTOR::BucketCHInitialTransfers, RAPTOR::AggregateProfiler, true, false>
+            mrBucket(delayedRaptorData, bucketCH);
+        std::vector<int> mrBucketRes; mrBucketRes.reserve(n);
+        Timer timer;
+        for (const VertexQuery& q : queries) {
+            mrBucket.run(q.source, q.departureTime, q.target);
+            mrBucketRes.push_back(mrBucket.getEarliestArrivalTime(q.target));
+        }
+        const double mrBucketTime = timer.elapsedMilliseconds();
+
+        std::cout << "\n--- HL-RAPTOR ---" << std::endl;
+        RAPTOR::HLRAPTOR<RAPTOR::AggregateProfiler> hlRaptor(delayedRaptorData, outHubs, inHubs);
+        std::vector<int> hlRaptorRes; hlRaptorRes.reserve(n);
+        timer.restart();
+        for (const VertexQuery& q : queries) {
+            hlRaptor.run(q.source, q.departureTime, q.target);
+            hlRaptorRes.push_back(hlRaptor.getEarliestArrivalTime(q.target));
+        }
+        const double hlRaptorTime = timer.elapsedMilliseconds();
+
+        std::cout << "\n--- HL-CSA ---" << std::endl;
+        CSA::HLCSA<CSA::AggregateProfiler> hlCSA(csaData, outHubs, inHubs);
+        std::vector<int> hlCSARes; hlCSARes.reserve(n);
+        timer.restart();
+        for (const VertexQuery& q : queries) {
+            hlCSA.run(q.source, q.departureTime, q.target);
+            hlCSARes.push_back(hlCSA.getEarliestArrivalTime(q.target));
+        }
+        const double hlCSATime = timer.elapsedMilliseconds();
+
+        std::cout << "\n=== Extra Timing Summary ===" << std::endl;
+        std::cout << std::fixed << std::setprecision(3);
+        std::cout << "  MR (Bucket-CH):  " << mrBucketTime << " ms  (" << (mrBucketTime / n) << " ms/query)" << std::endl;
+        std::cout << "  HL-RAPTOR:       " << hlRaptorTime << " ms  (" << (hlRaptorTime / n) << " ms/query)" << std::endl;
+        std::cout << "  HL-CSA:          " << hlCSATime << " ms  (" << (hlCSATime / n) << " ms/query)" << std::endl;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
 //  ANALYSIS COMMANDS
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1151,12 +1381,17 @@ public:
 
 private:
     template<typename ALGORITHM>
-    inline std::vector<std::vector<RAPTOR::ArrivalLabel>> runQueries(const std::vector<VertexQuery>& queries, ALGORITHM& algorithm) noexcept {
+    inline std::vector<std::vector<RAPTOR::ArrivalLabel>> runQueries(const std::vector<VertexQuery>& queries, ALGORITHM& algorithm, std::vector<double>* perQueryUs = nullptr) noexcept {
         Progress progress(queries.size());
         std::vector<std::vector<RAPTOR::ArrivalLabel>> results;
+        results.reserve(queries.size());
+        if (perQueryUs) perQueryUs->reserve(queries.size());
         for (const VertexQuery& query : queries) {
+            Timer t;
             algorithm.run(query.source, query.departureTime, query.target);
+            const double us = t.elapsedMicroseconds();
             results.emplace_back(algorithm.getArrivals());
+            if (perQueryUs) perQueryUs->push_back(us);
             progress++;
         }
         algorithm.getProfiler().printStatistics();
@@ -1330,6 +1565,7 @@ public:
         addParameter("Number of queries");
         addParameter("Start time", "14:00:00");
         addParameter("End time", "15:00:00");
+        addParameter("Per-query TSV output", "");
     }
 
     virtual void execute() noexcept {
@@ -1464,22 +1700,27 @@ public:
                                         startTime, endTime);
 
         // =================================================================
-        //  10. Run all algorithms
+        //  10. Run all algorithms (with per-query timing)
         // =================================================================
+        std::vector<double> mrUs, tadUs, tdUs, tbUs, urUs, urpUs, csaUs;
+
         std::cout << "\n--- MR (Dijkstra-RAPTOR) ---" << std::endl;
         Timer timer;
-        const auto dijkstraResults = runQueries(queries, dijkstraRaptor);
+        const auto dijkstraResults = runQueries(queries, dijkstraRaptor, &mrUs);
         const double mrTime = timer.elapsedMilliseconds();
 
         std::cout << "\n--- TAD (BucketCH) ---" << std::endl;
         std::vector<int> tadResults;
         tadResults.reserve(n);
+        tadUs.reserve(n);
         timer.restart();
         {
             Progress progress(n);
             for (size_t i = 0; i < n; ++i) {
                 const VertexQuery& q = queries[i];
+                Timer pq;
                 tadAlgorithm.run(q.source, q.departureTime, q.target);
+                tadUs.push_back(pq.elapsedMicroseconds());
                 tadResults.push_back(tadAlgorithm.getArrivalTime(q.target));
                 progress++;
             }
@@ -1489,12 +1730,15 @@ public:
         std::cout << "\n--- TD-Dijkstra (Classic, BucketCH) ---" << std::endl;
         std::vector<int> tdResults;
         tdResults.reserve(n);
+        tdUs.reserve(n);
         timer.restart();
         {
             Progress progress(n);
             for (size_t i = 0; i < n; ++i) {
                 const VertexQuery& q = queries[i];
+                Timer pq;
                 tdDijkstra.run(q.source, q.departureTime, q.target);
+                tdUs.push_back(pq.elapsedMicroseconds());
                 tdResults.push_back(tdDijkstra.getArrivalTime(q.target));
                 progress++;
             }
@@ -1503,23 +1747,54 @@ public:
 
         std::cout << "\n--- ULTRA-TB ---" << std::endl;
         timer.restart();
-        const auto tbResults = runQueries(queries, ultraTripBased);
+        const auto tbResults = runQueries(queries, ultraTripBased, &tbUs);
         const double tbTime = timer.elapsedMilliseconds();
 
         std::cout << "\n--- ULTRA-RAPTOR ---" << std::endl;
         timer.restart();
-        const auto urResults = runQueries(queries, ultraRaptor);
+        const auto urResults = runQueries(queries, ultraRaptor, &urUs);
         const double urTime = timer.elapsedMilliseconds();
 
         std::cout << "\n--- ULTRA-RAPTOR (EP) ---" << std::endl;
         timer.restart();
-        const auto urpResults = runQueries(queries, ultraRaptorEP);
+        const auto urpResults = runQueries(queries, ultraRaptorEP, &urpUs);
         const double urpTime = timer.elapsedMilliseconds();
 
         std::cout << "\n--- Delay-ULTRA-CSA ---" << std::endl;
+        csaUs.reserve(n);
+        std::vector<std::vector<RAPTOR::ArrivalLabel>> csaResults;
+        csaResults.reserve(n);
         timer.restart();
-        const auto csaResults = runCSAQueries(queries, delayCSA);
+        {
+            Progress progress(n);
+            for (size_t i = 0; i < n; ++i) {
+                const VertexQuery& q = queries[i];
+                Timer pq;
+                delayCSA.run(q.source, q.departureTime, q.target);
+                csaUs.push_back(pq.elapsedMicroseconds());
+                csaResults.emplace_back(delayCSA.getArrivals());
+                progress++;
+            }
+        }
         const double csaTime = timer.elapsedMilliseconds();
+
+        // Save per-query timings (if output path was supplied)
+        const std::string perQueryPath = getParameter("Per-query TSV output");
+        if (!perQueryPath.empty()) {
+            std::ofstream f(perQueryPath);
+            f << "query_id\tMR_us\tTAD_us\tTD_us\tULTRA_TB_us\tULTRA_RAPTOR_us\tULTRA_RAPTOR_EP_us\tDelay_ULTRA_CSA_us\n";
+            for (size_t i = 0; i < n; ++i) {
+                f << i << "\t"
+                  << (i < mrUs.size()  ? mrUs[i]  : -1) << "\t"
+                  << (i < tadUs.size() ? tadUs[i] : -1) << "\t"
+                  << (i < tdUs.size()  ? tdUs[i]  : -1) << "\t"
+                  << (i < tbUs.size()  ? tbUs[i]  : -1) << "\t"
+                  << (i < urUs.size()  ? urUs[i]  : -1) << "\t"
+                  << (i < urpUs.size() ? urpUs[i] : -1) << "\t"
+                  << (i < csaUs.size() ? csaUs[i] : -1) << "\n";
+            }
+            std::cout << "Per-query timings written to " << perQueryPath << std::endl;
+        }
 
         // =================================================================
         //  11. Timing summary
@@ -1589,13 +1864,18 @@ private:
     template<typename ALGORITHM>
     inline std::vector<std::vector<RAPTOR::ArrivalLabel>> runQueries(
             const std::vector<VertexQuery>& queries,
-            ALGORITHM& algorithm) const noexcept {
+            ALGORITHM& algorithm,
+            std::vector<double>* perQueryUs = nullptr) const noexcept {
         Progress progress(queries.size());
         std::vector<std::vector<RAPTOR::ArrivalLabel>> results;
         results.reserve(queries.size());
+        if (perQueryUs) perQueryUs->reserve(queries.size());
         for (const VertexQuery& query : queries) {
+            Timer t;
             algorithm.run(query.source, query.departureTime, query.target);
+            const double us = t.elapsedMicroseconds();
             results.emplace_back(algorithm.getArrivals());
+            if (perQueryUs) perQueryUs->push_back(us);
             progress++;
         }
         algorithm.getProfiler().printStatistics();
@@ -1615,5 +1895,293 @@ private:
             progress++;
         }
         return results;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Per-algorithm runner — loads only one algorithm's data, one process per algo.
+//  Algorithm tags: MR | TAD | TD | TB | UR | UR_EP | CSA
+//  Output TSV columns: query_id, source, target, departureTime, runtime_us, arrivalTime
+// ═══════════════════════════════════════════════════════════════════════════
+class RunDelayAlgo : public ParameterizedCommand {
+
+public:
+    RunDelayAlgo(BasicShell& shell) :
+        ParameterizedCommand(shell, "runDelayAlgo",
+            "Runs a single delay-aware algorithm in isolation. "
+            "Algorithm = MR | MR_PUNCTUAL | MR_BUCKET | TAD | TAD_BUCKET | "
+            "TD | TD_BUCKET | TB | UR | UR_EP | CSA | HL_RAPTOR | HL_CSA. "
+            "MR_PUNCTUAL uses the punctual (no-delay) network — used to "
+            "identify affected queries for accuracy tables.") {
+        addParameter("Algorithm");
+        addParameter("Dijkstra RAPTOR data");
+        addParameter("Trip-Based data");
+        addParameter("Core CH data");
+        addParameter("Bucket CH data");
+        addParameter("Update log file");
+        addParameter("Number of queries");
+        addParameter("Start time", "13:00:00");
+        addParameter("End time", "14:00:00");
+        addParameter("Output TSV");
+        addParameter("Out-hub file", "");
+        addParameter("In-hub file", "");
+    }
+
+    virtual void execute() noexcept {
+        const std::string algo = getParameter("Algorithm");
+        const size_t n  = getParameter<size_t>("Number of queries");
+        const int sT    = String::parseSeconds(getParameter("Start time"));
+        const int eT    = String::parseSeconds(getParameter("End time"));
+        const std::string outPath = getParameter("Output TSV");
+
+        // ---- common: delay data + apply updates --------------------------
+        TripBased::DelayData delayData(getParameter("Trip-Based data"));
+        delayData.printInfo();
+        TripBased::DelayUpdateSimulator delayUpdater(
+            delayData, getParameter("Update log file"));
+        delayUpdater.applyUpdatesUntil(sT, true);
+        const TripBased::DelayQueryData& queryData = delayUpdater.getQueryData();
+
+        // ---- queries (deterministic, seed 42) ----------------------------
+        // Use bucketCH vertex count if loaded; else use delayedRaptor's count.
+        // For MR (uses Core-CH only) we still want SAME query set as others
+        // so the comparison is apples-to-apples.  Easiest: always load
+        // bucketCH (small) regardless of algo, and derive numVertices from it.
+        CH::CH bucketCH(getParameter("Bucket CH data"));
+        const std::vector<VertexQuery> queries =
+            generateRandomVertexQueries(bucketCH.numVertices(), n, sT, eT);
+
+        // ---- pre-allocate output ----------------------------------------
+        std::vector<double> runtimeUs(n, -1.0);
+        std::vector<int>    arrivalTimes(n, never);
+        // Full Pareto front per query (for F.J. metric). Scalar-returning
+        // algorithms (MR_BUCKET / TAD / TD / CSA) push a single label.
+        std::vector<std::vector<int>> paretoArrivals(n);
+
+        // ---- dispatch ----------------------------------------------------
+        Timer wall;
+        if (algo == "MR") {
+            RAPTOR::Data dijkstraRaptorData(getParameter("Dijkstra RAPTOR data"));
+            dijkstraRaptorData.useImplicitDepartureBufferTimes();
+            CH::CH coreCH(getParameter("Core CH data"));
+            RAPTOR::Data delayedRaptorData = queryData.tripData.raptorData;
+            Graph::move(std::move(dijkstraRaptorData.transferGraph),
+                        delayedRaptorData.transferGraph);
+            RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers,
+                                   RAPTOR::AggregateProfiler>
+                algo_mr(delayedRaptorData, coreCH);
+            runPerQuery(queries, algo_mr, runtimeUs, arrivalTimes, paretoArrivals);
+        } else if (algo == "MR_PUNCTUAL") {
+            // MR on the punctual (no-delay) network — same algorithm as MR but
+            // uses the original raptor data unchanged. Used to identify
+            // affected queries (queries where delay changes the result).
+            RAPTOR::Data dijkstraRaptorData(getParameter("Dijkstra RAPTOR data"));
+            dijkstraRaptorData.useImplicitDepartureBufferTimes();
+            CH::CH coreCH(getParameter("Core CH data"));
+            RAPTOR::DijkstraRAPTOR<RAPTOR::CoreCHInitialTransfers,
+                                   RAPTOR::AggregateProfiler>
+                algo_mrp(dijkstraRaptorData, coreCH);
+            runPerQuery(queries, algo_mrp, runtimeUs, arrivalTimes, paretoArrivals);
+        } else if (algo == "MR_BUCKET") {
+            RAPTOR::Data dijkstraRaptorData(getParameter("Dijkstra RAPTOR data"));
+            dijkstraRaptorData.useImplicitDepartureBufferTimes();
+            RAPTOR::Data delayedRaptorData = queryData.tripData.raptorData;
+            Graph::move(std::move(dijkstraRaptorData.transferGraph),
+                        delayedRaptorData.transferGraph);
+            RAPTOR::DijkstraRAPTOR<RAPTOR::BucketCHInitialTransfers,
+                                   RAPTOR::AggregateProfiler, true, false>
+                algo_mrb(delayedRaptorData, bucketCH);
+            runPerQueryEarliest(queries, algo_mrb, runtimeUs, arrivalTimes, paretoArrivals);
+        } else if (algo == "TAD" || algo == "TAD_BUCKET") {
+            CH::CH coreCH(getParameter("Core CH data"));
+            Intermediate::Data im = DelayHelpers::buildIntermediateFromRAPTOR(
+                queryData.tripData.raptorData);
+            TimeDependentGraph g = TimeDependentGraph::FromIntermediate(im);
+            const size_t numStops = queryData.tripData.raptorData.numberOfStops();
+            if (algo == "TAD_BUCKET") {
+                TransferAwareDijkstraBucketCH<TimeDependentGraph,
+                                              TDD::AggregateProfiler, false, true>
+                    algo_tad(g, numStops, &bucketCH);
+                runPerQueryTAD(queries, algo_tad, runtimeUs, arrivalTimes, paretoArrivals);
+            } else {
+                TransferAwareDijkstra<TimeDependentGraph,
+                                      TDD::AggregateProfiler, false, true>
+                    algo_tad(g, numStops, &coreCH);
+                runPerQueryTAD(queries, algo_tad, runtimeUs, arrivalTimes, paretoArrivals);
+            }
+        } else if (algo == "TD" || algo == "TD_BUCKET") {
+            CH::CH coreCH(getParameter("Core CH data"));
+            Intermediate::Data im = DelayHelpers::buildIntermediateFromRAPTOR(
+                queryData.tripData.raptorData);
+            TimeDependentGraphClassic g =
+                TimeDependentGraphClassic::FromIntermediate(im);
+            const size_t numStops = queryData.tripData.raptorData.numberOfStops();
+            if (algo == "TD_BUCKET") {
+                TimeDependentDijkstraBucketCH<TimeDependentGraphClassic,
+                                              TDD::AggregateProfiler, false, true>
+                    algo_td(g, numStops, &bucketCH);
+                runPerQueryTAD(queries, algo_td, runtimeUs, arrivalTimes, paretoArrivals);
+            } else {
+                TimeDependentDijkstra<TimeDependentGraphClassic,
+                                      TDD::AggregateProfiler, false, true>
+                    algo_td(g, numStops, &coreCH);
+                runPerQueryTAD(queries, algo_td, runtimeUs, arrivalTimes, paretoArrivals);
+            }
+        } else if (algo == "TB") {
+            TripBased::Query<TripBased::AggregateProfiler>
+                algo_tb(queryData.tripData, bucketCH);
+            runPerQuery(queries, algo_tb, runtimeUs, arrivalTimes, paretoArrivals);
+        } else if (algo == "UR" || algo == "UR_EP") {
+            Intermediate::TransferGraph sg =
+                DelayHelpers::convertShortcutsToStopGraph(
+                    queryData.tripData.raptorData, queryData.tripData);
+            RAPTOR::Data srd = DelayHelpers::buildShortcutRaptorData(
+                queryData.tripData.raptorData, sg);
+            if (algo == "UR") {
+                RAPTOR::ULTRARAPTOR<RAPTOR::AggregateProfiler> algo_ur(srd, bucketCH);
+                runPerQuery(queries, algo_ur, runtimeUs, arrivalTimes, paretoArrivals);
+            } else {
+                srd.sortTransferGraphEdgesByTravelTime();
+                RAPTOR::ULTRARAPTOR_prune<RAPTOR::AggregateProfiler>
+                    algo_urep(srd, bucketCH);
+                runPerQuery(queries, algo_urep, runtimeUs, arrivalTimes, paretoArrivals);
+            }
+        } else if (algo == "CSA") {
+            Intermediate::TransferGraph sg =
+                DelayHelpers::convertShortcutsToStopGraph(
+                    queryData.tripData.raptorData, queryData.tripData);
+            CSA::Data csaData = DelayHelpers::buildCSADataWithShortcuts(
+                queryData.tripData.raptorData, sg);
+            const std::vector<int> emptyDelayVec;
+            CSA::DelayULTRACSA<false> algo_csa(csaData, bucketCH, emptyDelayVec, 0);
+            runPerQueryCSA(queries, algo_csa, runtimeUs, arrivalTimes, paretoArrivals);
+        } else if (algo == "HL_RAPTOR") {
+            RAPTOR::Data dijkstraRaptorData(getParameter("Dijkstra RAPTOR data"));
+            dijkstraRaptorData.useImplicitDepartureBufferTimes();
+            RAPTOR::Data delayedRaptorData = queryData.tripData.raptorData;
+            Graph::move(std::move(dijkstraRaptorData.transferGraph),
+                        delayedRaptorData.transferGraph);
+            const TransferGraph outHubs(getParameter("Out-hub file"));
+            const TransferGraph inHubs(getParameter("In-hub file"));
+            RAPTOR::HLRAPTOR<RAPTOR::AggregateProfiler>
+                algo_hlr(delayedRaptorData, outHubs, inHubs);
+            runPerQueryEarliest(queries, algo_hlr, runtimeUs, arrivalTimes, paretoArrivals);
+        } else if (algo == "HL_CSA") {
+            RAPTOR::Data dijkstraRaptorData(getParameter("Dijkstra RAPTOR data"));
+            dijkstraRaptorData.useImplicitDepartureBufferTimes();
+            RAPTOR::Data delayedRaptorData = queryData.tripData.raptorData;
+            Graph::move(std::move(dijkstraRaptorData.transferGraph),
+                        delayedRaptorData.transferGraph);
+            Intermediate::TransferGraph emptyGraph;
+            emptyGraph.addVertices(delayedRaptorData.numberOfStops());
+            CSA::Data csaData = DelayHelpers::buildCSADataWithShortcuts(
+                delayedRaptorData, emptyGraph);
+            csaData.sortConnectionsAscending();
+            const TransferGraph outHubs(getParameter("Out-hub file"));
+            const TransferGraph inHubs(getParameter("In-hub file"));
+            CSA::HLCSA<CSA::AggregateProfiler> algo_hlcsa(csaData, outHubs, inHubs);
+            runPerQueryEarliest(queries, algo_hlcsa, runtimeUs, arrivalTimes, paretoArrivals);
+        } else {
+            std::cerr << "Unknown algorithm tag: " << algo
+                      << " (expected MR | TAD | TD | TB | UR | UR_EP | CSA)"
+                      << std::endl;
+            return;
+        }
+        const double wallMs = wall.elapsedMilliseconds();
+
+        // ---- write TSV ---------------------------------------------------
+        // `arrival` is min over the Pareto front (= earliest, comparable
+        // across all algorithms). `pareto_arrivals` is the full front as a
+        // comma-separated list of arrival times (= journey set for F.J.).
+        std::ofstream f(outPath);
+        f << "query_id\tsource\ttarget\tdeparture\truntime_us\tarrival\tpareto_arrivals\n";
+        for (size_t i = 0; i < n; ++i) {
+            f << i << "\t"
+              << queries[i].source << "\t"
+              << queries[i].target << "\t"
+              << queries[i].departureTime << "\t"
+              << runtimeUs[i] << "\t"
+              << arrivalTimes[i] << "\t";
+            for (size_t j = 0; j < paretoArrivals[i].size(); ++j) {
+                if (j) f << ",";
+                f << paretoArrivals[i][j];
+            }
+            f << "\n";
+        }
+        std::cout << "\n=== " << algo << " ===" << std::endl;
+        std::cout << "  total wall:   " << wallMs << " ms ("
+                  << (wallMs / n) << " ms/query)" << std::endl;
+        std::cout << "  TSV written:  " << outPath << std::endl;
+    }
+
+private:
+    // Generic Pareto-front runner (MR / TB / UR / UR_EP / CSA).
+    // Stores all label arrival times in `pa[i]`. `at[i]` is the min over the
+    // front (= earliest arrival, comparable with scalar algorithms).
+    template<typename A>
+    inline void runPerQuery(const std::vector<VertexQuery>& queries, A& a,
+                            std::vector<double>& rUs,
+                            std::vector<int>& at,
+                            std::vector<std::vector<int>>& pa) const noexcept {
+        Progress p(queries.size());
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& q = queries[i];
+            Timer t;
+            a.run(q.source, q.departureTime, q.target);
+            rUs[i] = t.elapsedMicroseconds();
+            const auto arr = a.getArrivals();
+            int best = never;
+            pa[i].reserve(arr.size());
+            for (const auto& lbl : arr) {
+                pa[i].push_back(lbl.arrivalTime);
+                if (lbl.arrivalTime < best) best = lbl.arrivalTime;
+            }
+            at[i] = best;
+            p++;
+        }
+    }
+    // TAD / TD-Dijkstra return scalar via getArrivalTime.
+    template<typename A>
+    inline void runPerQueryTAD(const std::vector<VertexQuery>& queries, A& a,
+                               std::vector<double>& rUs,
+                               std::vector<int>& at,
+                               std::vector<std::vector<int>>& pa) const noexcept {
+        Progress p(queries.size());
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& q = queries[i];
+            Timer t;
+            a.run(q.source, q.departureTime, q.target);
+            rUs[i] = t.elapsedMicroseconds();
+            const int v = a.getArrivalTime(q.target);
+            at[i] = v;
+            if (v != never) pa[i].push_back(v);
+            p++;
+        }
+    }
+    // MR with Bucket-CH uses getEarliestArrivalTime(target).
+    template<typename A>
+    inline void runPerQueryEarliest(const std::vector<VertexQuery>& queries, A& a,
+                                    std::vector<double>& rUs,
+                                    std::vector<int>& at,
+                                    std::vector<std::vector<int>>& pa) const noexcept {
+        Progress p(queries.size());
+        for (size_t i = 0; i < queries.size(); ++i) {
+            const VertexQuery& q = queries[i];
+            Timer t;
+            a.run(q.source, q.departureTime, q.target);
+            rUs[i] = t.elapsedMicroseconds();
+            const int v = a.getEarliestArrivalTime(q.target);
+            at[i] = v;
+            if (v != never) pa[i].push_back(v);
+            p++;
+        }
+    }
+    // CSA: alias of generic Pareto-front runner.
+    template<typename A>
+    inline void runPerQueryCSA(const std::vector<VertexQuery>& queries, A& a,
+                               std::vector<double>& rUs,
+                               std::vector<int>& at,
+                               std::vector<std::vector<int>>& pa) const noexcept {
+        runPerQuery(queries, a, rUs, at, pa);
     }
 };

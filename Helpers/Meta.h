@@ -5,7 +5,9 @@
 #include <type_traits>
 #include <iostream>
 #include <typeinfo>
+#if defined(__x86_64__) || defined(__i386__)
 #include <emmintrin.h>
+#endif
 #include <concepts>
 
 #include <cstdlib>

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fstream>
 #include <random>
 #include <vector>
 
@@ -76,6 +77,40 @@ inline std::vector<StopQuery> generateRandomStopQueries(const size_t numStops, c
     std::vector<StopQuery> queries;
     for (size_t i = 0; i < numQueries; i++) {
         queries.emplace_back(StopId(stopDistribution(randomGenerator)), StopId(stopDistribution(randomGenerator)), timeDistribution(randomGenerator));
+    }
+    return queries;
+}
+
+inline void saveVertexQueries(const std::string& filename, const std::vector<VertexQuery>& queries) noexcept {
+    std::ofstream f(filename);
+    for (const auto& q : queries) {
+        f << q.source << "\t" << q.target << "\t" << q.departureTime << "\n";
+    }
+}
+
+inline void saveStopQueries(const std::string& filename, const std::vector<StopQuery>& queries) noexcept {
+    std::ofstream f(filename);
+    for (const auto& q : queries) {
+        f << q.source << "\t" << q.target << "\t" << q.departureTime << "\n";
+    }
+}
+
+inline std::vector<VertexQuery> loadVertexQueries(const std::string& filename) noexcept {
+    std::vector<VertexQuery> queries;
+    std::ifstream f(filename);
+    int s, t, dep;
+    while (f >> s >> t >> dep) {
+        queries.emplace_back(Vertex(s), Vertex(t), dep);
+    }
+    return queries;
+}
+
+inline std::vector<StopQuery> loadStopQueries(const std::string& filename) noexcept {
+    std::vector<StopQuery> queries;
+    std::ifstream f(filename);
+    int s, t, dep;
+    while (f >> s >> t >> dep) {
+        queries.emplace_back(StopId(s), StopId(t), dep);
     }
     return queries;
 }
