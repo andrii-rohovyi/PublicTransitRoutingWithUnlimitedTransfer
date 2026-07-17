@@ -33,6 +33,8 @@ using namespace Shell;
 
 #include "../../Algorithms/RAPTOR/InitialTransfers.h"
 #include "../../Algorithms/RAPTOR/RAPTOR.h"
+#include "../../Algorithms/RAPTOR/OneHopRAPTOR.h"
+#include "../../Algorithms/RAPTOR/OneHopULTRARAPTOR.h"
 #include "../../Algorithms/RAPTOR/ULTRARAPTOR.h"
 #include "../../Algorithms/TripBased/Query/Query.h"
 #include "../../Algorithms/TripBased/Query/TransitiveQuery.h"
@@ -1473,6 +1475,108 @@ public:
             algorithm.getProfiler().printStatistics();
             std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys / n) << std::endl;
         }
+    }
+};
+
+class RunOneHopRAPTORQueries : public ParameterizedCommand {
+
+public:
+    RunOneHopRAPTORQueries(BasicShell& shell) :
+        ParameterizedCommand(shell, "runOneHopRAPTORQueries", "Runs random one-hop RAPTOR queries (non-transitive transfers) with a query-time transfer radius.") {
+        addParameter("RAPTOR input file");
+        addParameter("Number of queries");
+        addParameter("Max transfer travel time (s)", "1800");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data raptorData = RAPTOR::Data::FromBinary(getParameter("RAPTOR input file"));
+        raptorData.useImplicitDepartureBufferTimes();
+        raptorData.printInfo();
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const int maxTransferTravelTime = getParameter<int>("Max transfer travel time (s)");
+        std::cout << "Transfer radius: " << maxTransferTravelTime << " s ("
+                  << String::prettyDouble(maxTransferTravelTime / 60.0) << " min)" << std::endl;
+
+        RAPTOR::OneHopRAPTOR<RAPTOR::AggregateProfiler> algorithm(raptorData);
+        const std::vector<StopQuery> queries = generateRandomStopQueries(raptorData.numberOfStops(), n);
+
+        double numJourneys = 0;
+        for (const StopQuery& query : queries) {
+            algorithm.run(query.source, query.departureTime, query.target, maxTransferTravelTime);
+            numJourneys += algorithm.getJourneys().size();
+        }
+        algorithm.getProfiler().printStatistics();
+        std::cout << "Avg. journeys: " << String::prettyDouble(numJourneys / n) << std::endl;
+    }
+};
+
+class RunOneHopULTRARAPTORQueries : public ParameterizedCommand {
+
+public:
+    RunOneHopULTRARAPTORQueries(BasicShell& shell) :
+        ParameterizedCommand(shell, "runOneHopULTRARAPTORQueries", "Runs one-hop ULTRA-RAPTOR queries (shortcuts for intermediate, full graph for initial/final, no CH) and compares to one-hop RAPTOR on the full graph.") {
+        addParameter("Shortcut RAPTOR file");
+        addParameter("Full RAPTOR file");
+        addParameter("Number of queries");
+        addParameter("Max transfer travel time (s)", "1800");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data shortcutData = RAPTOR::Data::FromBinary(getParameter("Shortcut RAPTOR file"));
+        shortcutData.useImplicitDepartureBufferTimes();
+        shortcutData.sortTransferGraphEdgesByTravelTime();
+        std::cout << "Shortcut network:" << std::endl;
+        shortcutData.printInfo();
+
+        RAPTOR::Data fullData = RAPTOR::Data::FromBinary(getParameter("Full RAPTOR file"));
+        fullData.useImplicitDepartureBufferTimes();
+        fullData.sortTransferGraphEdgesByTravelTime();
+        std::cout << "Full (initial/final) transfer graph:" << std::endl;
+        Graph::printInfo(fullData.transferGraph);
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const int maxTransferTravelTime = getParameter<int>("Max transfer travel time (s)");
+        std::cout << "Transfer radius: " << maxTransferTravelTime << " s ("
+                  << String::prettyDouble(maxTransferTravelTime / 60.0) << " min)" << std::endl;
+        const std::vector<StopQuery> queries = generateRandomStopQueries(shortcutData.numberOfStops(), n);
+
+        // Baseline: one-hop RAPTOR on the full transfer graph.
+        RAPTOR::OneHopRAPTOR<RAPTOR::AggregateProfiler> baseline(fullData);
+        // ULTRA: shortcuts for intermediate transfers, full graph for initial/final.
+        RAPTOR::OneHopULTRARAPTOR<RAPTOR::AggregateProfiler> ultra(shortcutData, fullData.transferGraph);
+
+        double baseJourneys = 0;
+        double ultraJourneys = 0;
+        size_t identical = 0;
+        size_t mismatches = 0;
+        for (const StopQuery& query : queries) {
+            baseline.run(query.source, query.departureTime, query.target, maxTransferTravelTime);
+            ultra.run(query.source, query.departureTime, query.target, maxTransferTravelTime);
+            const std::vector<RAPTOR::ArrivalLabel> baseArrivals = baseline.getArrivals();
+            const std::vector<RAPTOR::ArrivalLabel> ultraArrivals = ultra.getArrivals();
+            baseJourneys += baseArrivals.size();
+            ultraJourneys += ultraArrivals.size();
+            if (baseArrivals == ultraArrivals) {
+                identical++;
+            } else {
+                mismatches++;
+                if (mismatches <= 10) {
+                    std::cout << "MISMATCH q(" << query.source << "->" << query.target << " @" << query.departureTime << "): "
+                              << "full=" << baseArrivals.size() << " ultra=" << ultraArrivals.size() << std::endl;
+                }
+            }
+        }
+        std::cout << "=== Correctness over " << n << " queries ===" << std::endl;
+        std::cout << "Full one-hop RAPTOR   avg journeys: " << String::prettyDouble(baseJourneys / n) << std::endl;
+        std::cout << "One-hop ULTRA-RAPTOR  avg journeys: " << String::prettyDouble(ultraJourneys / n) << std::endl;
+        std::cout << "Identical Pareto sets: " << identical << " / " << n << std::endl;
+        std::cout << "Mismatches:            " << mismatches << " / " << n << std::endl;
+
+        std::cout << "=== Performance: full one-hop RAPTOR on transitive closure ===" << std::endl;
+        baseline.getProfiler().printStatistics();
+        std::cout << "=== Performance: one-hop ULTRA-RAPTOR (shortcuts + transitive initial/final) ===" << std::endl;
+        ultra.getProfiler().printStatistics();
     }
 };
 
