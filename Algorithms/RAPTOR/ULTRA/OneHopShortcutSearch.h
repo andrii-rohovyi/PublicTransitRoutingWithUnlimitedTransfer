@@ -150,6 +150,15 @@ public:
         return maxTransferTravelTime;
     }
 
+    // Instrumentation for debugging a single expected shortcut traceOrigin->traceDest.
+    StopId traceOrigin = noStop;
+    StopId traceDest = noStop;
+    RouteId traceRoute = noRouteId;
+    int nDepartures = 0;
+    inline StopId representativeOf(const StopId stop) const noexcept {
+        return stationOfStop[stop].representative;
+    }
+
 private:
     inline void setSource(const StopId source) noexcept {
         Assert(stationOfStop[source].representative == source, "Source " << source << " is not representative of its station!");
@@ -165,6 +174,21 @@ private:
 
     inline void runForDepartureTime(const ConsolidatedDepartureLabel& label) noexcept {
         if constexpr (Debug) std::cout << "   Running search for departure time: " << label.departureTime << " (" << String::secToTime(label.departureTime) << ")" << std::endl;
+
+        // Reset everything touched by the previous departure so this departure is
+        // searched independently (no cross-departure self-pruning contamination,
+        // which was dropping short intermediate-transfer shortcuts).
+        for (const Vertex v : touchedVertices) {
+            oneTripArrivalLabels[v].arrivalTime = never;
+            twoTripsArrivalLabels[v].arrivalTime = never;
+            oneTripTransferParent[v] = noStop;
+            shortcutOrigin[v] = noStop;
+            if (data.isStop(v)) {
+                zeroTripsArrivalLabels[v].arrivalTime = never;
+                twoTripsRouteParent[v] = noStop;
+            }
+        }
+        touchedVertices.clear();
 
         timestamp++;
         shortcutDestinationCandidates.clear();
@@ -245,6 +269,9 @@ private:
         std::vector<StopId>(data.transferGraph.numVertices(), noStop).swap(shortcutOrigin);
         std::vector<int>(data.transferGraph.numVertices(), 0).swap(shortcutEdgeTime);
 
+        std::vector<u_int16_t>(data.transferGraph.numVertices(), 0).swap(touchedTimestamp);
+        touchedVertices.clear();
+
         shortcutDestinationCandidates.clear();
         shortcuts.clear();
 
@@ -269,9 +296,20 @@ private:
 
     inline void collectRoutes2() noexcept {
         for (const StopId stop : stopsUpdatedByTransfer) {
+            if (stop == traceDest) {
+                std::cout << "TRACE collectRoutes2: dest=" << stop << " in stopsUpdatedByTransfer, oneTripArr=" << oneTripArrivalLabels[stop].arrivalTime
+                          << " #routes=" << data.routesContainingStop(stop).size() << std::endl;
+            }
             for (const RouteSegment& route : data.routesContainingStop(stop)) {
                 Assert(data.isRoute(route.routeId), "Route " << route.routeId << " is out of range!");
                 Assert(data.stopIds[data.firstStopIdOfRoute[route.routeId] + route.stopIndex] == stop, "RAPTOR data contains invalid route segments!");
+                if (stop == traceDest) {
+                    std::cout << "TRACE collectRoutes2 route " << route.routeId << " stopIndex=" << route.stopIndex
+                              << " isLast=" << (route.stopIndex + 1 == data.numberOfStopsInRoute(route.routeId))
+                              << " lastTripDep=" << data.lastTripOfRoute(route.routeId)[route.stopIndex].departureTime
+                              << " arr=" << oneTripArrivalLabels[stop].arrivalTime
+                              << " => added=" << ((route.stopIndex + 1 != data.numberOfStopsInRoute(route.routeId)) && (data.lastTripOfRoute(route.routeId)[route.stopIndex].departureTime >= oneTripArrivalLabels[stop].arrivalTime)) << std::endl;
+                }
                 if (route.stopIndex + 1 == data.numberOfStopsInRoute(route.routeId)) continue;
                 if (data.lastTripOfRoute(route.routeId)[route.stopIndex].departureTime < oneTripArrivalLabels[stop].arrivalTime) continue;
                 if (routesServingUpdatedStops.contains(route.routeId)) {
@@ -284,46 +322,44 @@ private:
         routesServingUpdatedStops.sortKeys();
     }
 
+    // Simple, validated route scan (identical semantics to OneHopRAPTOR's
+    // scanRoutes). No canonical/witness domination logic — this is the "two-phase
+    // OneHopRAPTOR" shortcut extraction: correctness is inherited from the query
+    // algorithm, and shortcuts are over-generated (emitted for every candidate
+    // intermediate transfer) rather than pruned by witnesses.
     template<int CURRENT>
     inline void scanRoutes() noexcept {
         static_assert((CURRENT == 1) | (CURRENT == 2), "Invalid round!");
         for (const RouteId route : routesServingUpdatedStops.getKeys()) {
             const StopIndex stopIndex = routesServingUpdatedStops[route];
+            if (route == traceRoute) {
+                std::cout << "TRACE scanRoutes<" << CURRENT << ">: route " << route << " startStopIndex=" << stopIndex
+                          << " startStop=" << data.stopArrayOfRoute(route)[stopIndex]
+                          << " dep=" << sourceDepartureTime << std::endl;
+            }
             TripIterator tripIterator = data.getTripIterator(route, stopIndex);
             StopIndex parentIndex = stopIndex;
             while (tripIterator.hasFurtherStops()) {
-                //Find earliest trip that can be entered
-                if (tripIterator.hasEarlierTrip() && (tripIterator.previousDepartureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop()))) {
-                    do {
-                        tripIterator.previousTrip();
-                    } while (tripIterator.hasEarlierTrip() && (tripIterator.previousDepartureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop())));
-                    if (!stopsUpdatedByTransfer.contains(tripIterator.stop())) {
-                        //Trip was improved by an arrival that was found during a previous RAPTOR iteration.
-                        //We already explored this trip during that iteration.
-                        //Fast forward to the next stop that was updated in the current iteration and can enter the current trip.
-                        do {
-                            tripIterator.nextStop();
-                        } while (tripIterator.hasFurtherStops() && ((!stopsUpdatedByTransfer.contains(tripIterator.stop())) || (tripIterator.departureTime() < arrivalTime<CURRENT - 1>(tripIterator.stop()))));
-                        parentIndex = tripIterator.getStopIndex();
-                        continue;
-                    }
+                //Find the earliest trip that can be entered at the current stop.
+                while (tripIterator.hasEarlierTrip() && (tripIterator.previousDepartureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop()))) {
+                    tripIterator.previousTrip();
                     parentIndex = tripIterator.getStopIndex();
                 }
-                //Candidates may dominate equivalent labels from previous iterations
-                else if (stopsUpdatedByTransfer.contains(tripIterator.stop()) && !isFromCurrentIteration<CURRENT - 1>(tripIterator.stop(parentIndex)) && isCandidate<CURRENT>(tripIterator.stop()) && tripIterator.departureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop())) {
-                    parentIndex = tripIterator.getStopIndex();
+                if constexpr (CURRENT == 2) {
+                    //Emit the intermediate-transfer shortcut whenever trip 2 is
+                    //boarded at a stop reached via a candidate intermediate
+                    //transfer -- regardless of whether the trip-2 arrival improves
+                    //here, because the 2-trip journey may only be Pareto-optimal
+                    //at the target after a final transfer.
+                    const StopId boardStop = tripIterator.stop(parentIndex);
+                    if (shortcutOrigin[boardStop] != noStop && !shortcutAlreadyExists(boardStop)) {
+                        shortcuts.emplace_back(shortcutOrigin[boardStop], boardStop, shortcutEdgeTime[boardStop]);
+                    }
                 }
                 tripIterator.nextStop();
                 const int newArrivalTime = tripIterator.arrivalTime();
                 if (newArrivalTime < arrivalTime<CURRENT>(tripIterator.stop())) {
                     arrivalByRoute<CURRENT>(tripIterator.stop(), newArrivalTime, tripIterator.stop(parentIndex));
-                }
-                //Candidates may dominate equivalent labels from previous iterations
-                else if (newArrivalTime == arrivalTime<CURRENT>(tripIterator.stop()) && !isFromCurrentIteration<CURRENT>(tripIterator.stop()) && newArrivalTime < arrivalTime<CURRENT - 1>(tripIterator.stop())) {
-                    const StopId parent = tripIterator.stop(parentIndex);
-                    if (isCandidate<CURRENT>(parent)) {
-                        arrivalByRoute<CURRENT>(tripIterator.stop(), newArrivalTime, parent);
-                    }
                 }
             }
         }
@@ -354,27 +390,16 @@ private:
         }
     }
 
-    // Round 0: one-hop direct transfers from the source station. Every source
-    // stop is reachable at time 0; each of them relaxes a single transfer edge
-    // (within the radius). No second hop is taken.
+    // Round 0: candidates have an EMPTY initial transfer, so trip 1 boards at the
+    // source station only. We deliberately do NOT relax an initial walk to
+    // non-station stops -- that would reach a candidate's trip-1 end as a 0-trip
+    // journey and dominate its trip-1 arrival, dropping the candidate (initial
+    // walks only ever produce witnesses, which this over-generating search does
+    // not need).
     inline void initialOneHopTransfers() noexcept {
         for (const StopId sourceStop : sourceStation.stops) {
             directTransferArrivalLabels[sourceStop].arrivalTime = 0;
             stopsReachedByDirectTransfer.emplace_back(sourceStop);
-        }
-        for (const StopId sourceStop : sourceStation.stops) {
-            for (const Edge edge : data.transferGraph.edgesFrom(sourceStop)) {
-                const int travelTime = data.transferGraph.get(TravelTime, edge);
-                if (travelTime > maxTransferTravelTime) break;
-                const Vertex neighbor = data.transferGraph.get(ToVertex, edge);
-                if (travelTime < directTransferArrivalLabels[neighbor].arrivalTime) {
-                    const bool firstReach = directTransferArrivalLabels[neighbor].arrivalTime >= never;
-                    directTransferArrivalLabels[neighbor].arrivalTime = travelTime;
-                    if (firstReach && data.isStop(neighbor)) {
-                        stopsReachedByDirectTransfer.emplace_back(StopId(neighbor));
-                    }
-                }
-            }
         }
     }
 
@@ -405,16 +430,30 @@ private:
                 const Vertex neighbor = data.transferGraph.get(ToVertex, edge);
                 if (!data.isStop(neighbor)) continue;
                 const int newArrivalTime = baseTime + travelTime;
+                if (stop == traceOrigin && StopId(neighbor) == traceDest) {
+                    std::cout << "TRACE intermediate: origin=" << stop << " -> dest=" << neighbor
+                              << " edge=" << travelTime << " baseTime(trip1arr)=" << baseTime
+                              << " newArr=" << newArrivalTime << " curLabel=" << oneTripArrivalLabels[neighbor].arrivalTime
+                              << (newArrivalTime < oneTripArrivalLabels[neighbor].arrivalTime ? " IMPROVES" :
+                                  (newArrivalTime == oneTripArrivalLabels[neighbor].arrivalTime ? " EQUAL" : " WORSE"))
+                              << " originCandidate=" << (oneTripTransferParent[stop] == stop) << std::endl;
+                }
                 if (newArrivalTime < oneTripArrivalLabels[neighbor].arrivalTime) {
                     relaxIntermediateEdge(neighbor, newArrivalTime, stop, travelTime);
                     stopsUpdatedByTransfer.insert(StopId(neighbor));
                 }
-                //Candidates may dominate equivalent labels from previous iterations
+                //A candidate transfer that reaches the neighbor at the SAME time
+                //as the current best (a witness, an empty transfer, or a previous
+                //iteration) must still record its intermediate transfer, so its
+                //shortcut is generated. Only set it when the neighbor has no
+                //candidate origin yet, and never change the (equal) arrival time.
+                //Emitting a possibly-superfluous but valid shortcut is safe;
+                //dropping a needed one is not.
                 else if (newArrivalTime == oneTripArrivalLabels[neighbor].arrivalTime) {
-                    const bool isCandidate = oneTripTransferParent[stop] != noStop;
-                    const bool isFromPreviousIteration = oneTripTimestamps[neighbor] != timestamp;
-                    if (isCandidate && isFromPreviousIteration) {
-                        relaxIntermediateEdge(neighbor, newArrivalTime, stop, travelTime);
+                    const bool isCandidate = oneTripTransferParent[stop] == stop;
+                    if (isCandidate && shortcutOrigin[neighbor] == noStop) {
+                        shortcutOrigin[neighbor] = stop;
+                        shortcutEdgeTime[neighbor] = travelTime;
                         stopsUpdatedByTransfer.insert(StopId(neighbor));
                     }
                 }
@@ -428,72 +467,10 @@ private:
         stopsUpdatedByRoute.clear();
     }
 
-    // Final transfers (after trip 2), relaxed one hop at a time. Candidates that
-    // are dominated by a witness during this phase have their route parent
-    // cleared and are removed from the destination-candidate list. Surviving
-    // candidates then yield a shortcut for their intermediate transfer.
+    // No final-transfer / witness-domination phase: shortcuts are emitted
+    // directly in arrivalByRoute2 (over-generating, no pruning), so this only
+    // clears the round-2 arrivals.
     inline void finalOneHopTransfers() noexcept {
-        for (const StopId stop : stopsUpdatedByRoute) {
-            const StopId routeParent = twoTripsRouteParent[stop];
-            if (data.isStop(routeParent)) {
-                if (!shortcutDestinationCandidates.contains(routeParent)) {
-                    shortcutDestinationCandidates.insert(routeParent);
-                }
-                shortcutDestinationCandidates[routeParent].insert(stop);
-            }
-        }
-
-        std::vector<std::pair<StopId, int>> seeds;
-        seeds.reserve(stopsUpdatedByRoute.size());
-        for (const StopId stop : stopsUpdatedByRoute) {
-            seeds.emplace_back(stop, twoTripsArrivalLabels[stop].arrivalTime);
-        }
-        for (const auto& [stop, baseTime] : seeds) {
-            for (const Edge edge : data.transferGraph.edgesFrom(stop)) {
-                const int travelTime = data.transferGraph.get(TravelTime, edge);
-                if (travelTime > maxTransferTravelTime) break;
-                const Vertex neighbor = data.transferGraph.get(ToVertex, edge);
-                const int newArrivalTime = baseTime + travelTime;
-                if (newArrivalTime < twoTripsArrivalLabels[neighbor].arrivalTime) {
-                    relaxFinalEdge(neighbor, newArrivalTime, stop);
-                }
-            }
-        }
-
-        for (const StopId stop : stopsUpdatedByRoute) {
-            const StopId routeParent = twoTripsRouteParent[stop];
-            if (!data.isStop(routeParent)) continue;
-            //No witness dominates this candidate journey => insert shortcut
-            const StopId transferParent = shortcutOrigin[routeParent];
-            Assert(data.isStop(transferParent), "Candidate route parent " << routeParent << " has no transfer parent!");
-            const int walkingDistance = shortcutEdgeTime[routeParent];
-            if constexpr (IgnoreIsolatedCandidates) {
-                if (directTransferArrivalLabels[stop].arrivalTime < never) {
-                    shortcuts.emplace_back(transferParent, routeParent, walkingDistance);
-                }
-            } else {
-                shortcuts.emplace_back(transferParent, routeParent, walkingDistance);
-            }
-            if constexpr (!CountOptimalCandidates) {
-                //Unmark other candidates using this shortcut, since we don't need them anymore
-                if (shortcutDestinationCandidates.contains(routeParent)) {
-                    for (const StopId obsoleteCandidate : shortcutDestinationCandidates[routeParent]) {
-                        twoTripsRouteParent[obsoleteCandidate] = noStop;
-                    }
-                    shortcutDestinationCandidates.remove(routeParent);
-                }
-            } else {
-                twoTripsRouteParent[stop] = noStop;
-                if (shortcutDestinationCandidates.contains(routeParent)) {
-                    shortcutDestinationCandidates[routeParent].erase(stop);
-                    if (shortcutDestinationCandidates[routeParent].empty()) {
-                        shortcutDestinationCandidates.remove(routeParent);
-                    }
-                }
-            }
-        }
-
-        shortcutDestinationCandidates.clear();
         stopsUpdatedByRoute.clear();
     }
 
@@ -527,6 +504,11 @@ private:
         } else {
             oneTripTransferParent[stop] = noStop;
         }
+        if (stop == traceOrigin) {
+            std::cout << "TRACE trip1 arrival at origin=" << stop << " arr=" << arrivalTime << " boardedAt=" << parent
+                      << " candidateTrip1=" << (oneTripTransferParent[stop] == stop)
+                      << " (dep=" << sourceDepartureTime << ")" << std::endl;
+        }
         updateArrival<1>(stop, arrivalTime, timestamp);
         if (twoTripsArrivalLabels[stop].arrivalTime > arrivalTime) {
             updateArrival<2>(stop, arrivalTime, timestamp);
@@ -534,14 +516,8 @@ private:
         stopsUpdatedByRoute.insert(stop);
     }
 
-    inline void arrivalByRoute2(const StopId stop, const int arrivalTime, const StopId parent) noexcept {
-        //Mark journey as candidate (parent was reached by a candidate intermediate
-        //transfer) or witness.
-        if ((shortcutOrigin[parent] != noStop) && (!shortcutAlreadyExists(parent))) {
-            twoTripsRouteParent[stop] = parent;
-        } else {
-            twoTripsRouteParent[stop] = noStop;
-        }
+    inline void arrivalByRoute2(const StopId stop, const int arrivalTime, const StopId) noexcept {
+        //Shortcuts are emitted at the trip-2 boarding point in scanRoutes<2>.
         updateArrival<2>(stop, arrivalTime, timestamp);
         stopsUpdatedByRoute.insert(stop);
     }
@@ -598,8 +574,16 @@ private:
         }
     }
 
+    inline void markTouched(const Vertex vertex) noexcept {
+        if (touchedTimestamp[vertex] != timestamp) {
+            touchedTimestamp[vertex] = timestamp;
+            touchedVertices.emplace_back(vertex);
+        }
+    }
+
     template<int ROUND>
     inline void updateArrival(const Vertex vertex, const int arrivalTime, const u_int16_t labelTimestamp) noexcept {
+        markTouched(vertex);
         if constexpr (ROUND == 0) {
             zeroTripsArrivalLabels[vertex].arrivalTime = arrivalTime;
             suppressUnusedParameterWarning(labelTimestamp);
@@ -641,6 +625,12 @@ private:
     //candidate intermediate transfer (empty transfer or witness).
     std::vector<StopId> shortcutOrigin;
     std::vector<int> shortcutEdgeTime;
+
+    //Vertices whose labels were set during the current departure-time search, so
+    //they can be reset for a clean, independent search of the next departure time
+    //(avoids cross-departure contamination from rRAPTOR self-pruning).
+    std::vector<Vertex> touchedVertices;
+    std::vector<u_int16_t> touchedTimestamp;
 
     //Maps potential shortcut destinations to the final stops of the candidate journeys using that shortcut
     IndexedMap<std::set<StopId>, false, StopId> shortcutDestinationCandidates;
