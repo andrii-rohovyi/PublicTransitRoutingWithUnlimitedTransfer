@@ -77,7 +77,11 @@ public:
         ULTRARAPTOR(data, forwardGraph, backwardGraph, TravelTime, profilerTemplate) {
     }
 
-    inline void run(const Vertex source, const int departureTime, const Vertex target, const size_t maxRounds = INFTY) noexcept {
+    // `maxTransferTravelTime` bounds a single transfer edge (seconds), applied to
+    // initial, intermediate and final transfers. INFTY (default) = unchanged.
+    inline void run(const Vertex source, const int departureTime, const Vertex target, const size_t maxRounds = INFTY, const int maxTransferTravelTime = INFTY) noexcept {
+        this->maxTransferTravelTime = maxTransferTravelTime;
+        initialTransfers.setMaxTransferTravelTime(maxTransferTravelTime);
         profiler.start();
         profiler.startExtraRound(EXTRA_ROUND_CLEAR);
         clear();
@@ -347,10 +351,13 @@ private:
         for (const StopId stop : stopsUpdatedByRoute) {
             const int earliestArrivalTime = SeparateRouteAndTransferEntries ? previousRound()[stop].arrivalTime : currentRound()[stop].arrivalTime;
             for (const Edge edge : data.transferGraph.edgesFrom(stop)) {
+                const int transferTravelTime = data.transferGraph.get(TravelTime, edge);
+                //Edges are sorted by ascending travel time.
+                if (transferTravelTime > maxTransferTravelTime) break;
                 const StopId toStop = StopId(data.transferGraph.get(ToVertex, edge));
                 if (toStop == targetStop) continue;
                 profiler.countMetric(METRIC_EDGES);
-                const int arrivalTime = earliestArrivalTime + data.transferGraph.get(TravelTime, edge);
+                const int arrivalTime = earliestArrivalTime + transferTravelTime;
                 Assert(data.isStop(data.transferGraph.get(ToVertex, edge)), "Graph contains edges to non stop vertices!");
                 if (arrivalByTransfer(toStop, arrivalTime)) {
                     EarliestArrivalLabel& label = currentRound()[toStop];
@@ -459,6 +466,7 @@ private:
     const Data& data;
 
     InitialTransferType initialTransfers;
+    int maxTransferTravelTime = INFTY;
 
     std::vector<Round> rounds;
 

@@ -34,7 +34,14 @@ public:
         distance {std::vector<int>(forwardGraph.numVertices(), INFTY), std::vector<int>(backwardGraph.numVertices(), INFTY)},
         root {Vertex(0), Vertex(0)},
         reachedPOIs {std::vector<Vertex>(), std::vector<Vertex>()},
-        targetDistance(INFTY) {
+        targetDistance(INFTY),
+        maxTransferTravelTime(INFTY) {
+    }
+
+    // Bounds a single initial/final transfer edge (seconds). Requires the graphs
+    // to be sorted by ascending TravelTime. INFTY (default) = unchanged.
+    inline void setMaxTransferTravelTime(const int maxTime) noexcept {
+        maxTransferTravelTime = maxTime;
     }
 
     template<typename ATTRIBUTE>
@@ -105,8 +112,11 @@ private:
         distance[DIRECTION][root[DIRECTION]] = 0;
         reachedPOIs[DIRECTION].emplace_back(root[DIRECTION]);
         for (const Edge edge : graph[DIRECTION].edgesFrom(root[DIRECTION])) {
+            const int travelTime = graph[DIRECTION].get(TravelTime, edge);
+            //Edges are sorted by ascending travel time.
+            if (travelTime > maxTransferTravelTime) break;
             const Vertex vertex = graph[DIRECTION].get(ToVertex, edge);
-            distance[DIRECTION][vertex] = graph[DIRECTION].get(TravelTime, edge);
+            distance[DIRECTION][vertex] = travelTime;
             reachedPOIs[DIRECTION].emplace_back(vertex);
         }
     }
@@ -116,6 +126,7 @@ private:
     Vertex root[2];
     std::vector<Vertex> reachedPOIs[2];
     int targetDistance;
+    int maxTransferTravelTime;
 
 };
 

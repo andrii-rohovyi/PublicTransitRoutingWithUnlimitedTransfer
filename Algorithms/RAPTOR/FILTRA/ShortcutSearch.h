@@ -14,7 +14,7 @@
 #include "../../../DataStructures/RAPTOR/Data.h"
 #include "../../../DataStructures/RAPTOR/Entities/Shortcut.h"
 
-namespace RAPTOR::ULTRA {
+namespace RAPTOR::FILTRA {
 
 // One-hop (bounded-radius) variant of the ULTRA canonical-MR shortcut search.
 //
@@ -52,13 +52,13 @@ namespace RAPTOR::ULTRA {
 // tie-breaking (by id_R / id_V) could be layered on top if a minimal set is
 // required.
 template<bool DEBUG = false, bool COUNT_OPTIMAL_CANDIDATES = false, bool IGNORE_ISOLATED_CANDIDATES = false>
-class OneHopShortcutSearch {
+class ShortcutSearch {
 
 public:
     inline static constexpr bool Debug = DEBUG;
     inline static constexpr bool CountOptimalCandidates = COUNT_OPTIMAL_CANDIDATES;
     inline static constexpr bool IgnoreIsolatedCandidates = IGNORE_ISOLATED_CANDIDATES;
-    using Type = OneHopShortcutSearch<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates>;
+    using Type = ShortcutSearch<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates>;
 
 public:
     struct ArrivalLabel {
@@ -84,24 +84,11 @@ public:
         }
     };
 
-    struct Station {
-        Station() : representative(noStop) {}
-        StopId representative;
-        std::vector<StopId> stops;
-        inline void add(const StopId stop) noexcept {
-            if (representative > stop) {
-                representative = stop;
-            }
-            stops.emplace_back(stop);
-        }
-    };
-
 public:
-    OneHopShortcutSearch(const Data& data, DynamicTransferGraph& shortcutGraph, const int maxTransferTravelTime = INFTY) :
+    ShortcutSearch(const Data& data, DynamicTransferGraph& shortcutGraph, const int maxTransferTravelTime = INFTY) :
         data(data),
         shortcutGraph(shortcutGraph),
-        stationOfStop(data.numberOfStops()),
-        sourceStation(),
+        sourceStop(noStop),
         sourceDepartureTime(0),
         shortcutDestinationCandidates(data.numberOfStops()),
         optimalCandidates(0),
@@ -112,20 +99,10 @@ public:
         earliestDepartureTime(data.getMinDepartureTime()),
         timestamp(0) {
         Assert(data.hasImplicitBufferTimes(), "Shortcut search requires implicit departure buffer times!");
-        // Stations group stops that are mutually reachable via zero-time transfer edges.
-        for (const StopId stop : data.stops()) {
-            stationOfStop[stop].add(stop);
-            for (const Edge edge : data.transferGraph.edgesFrom(stop)) {
-                if (data.transferGraph.get(TravelTime, edge) != 0) break;
-                const Vertex other = data.transferGraph.get(ToVertex, edge);
-                if (data.isStop(other)) stationOfStop[stop].add(StopId(other));
-            }
-        }
     }
 
     inline void run(const StopId source, const int minTime, const int maxTime) noexcept {
         Assert(data.isStop(source), "source (" << source << ") is not a stop!");
-        if (stationOfStop[source].representative != source) return;
         setSource(source);
         for (const ConsolidatedDepartureLabel& label : collectDepartures(minTime, maxTime)) {
             runForDepartureTime(label);
@@ -156,15 +133,14 @@ public:
     RouteId traceRoute = noRouteId;
     int nDepartures = 0;
     inline StopId representativeOf(const StopId stop) const noexcept {
-        return stationOfStop[stop].representative;
+        return stop;
     }
 
 private:
     inline void setSource(const StopId source) noexcept {
-        Assert(stationOfStop[source].representative == source, "Source " << source << " is not representative of its station!");
         clear();
-        sourceStation = stationOfStop[source];
-        initialOneHopTransfers();
+        sourceStop = source;
+        initializeSource();
         sort(stopsReachedByDirectTransfer);
         if constexpr (Debug) {
             std::cout << "   Source stop: " << source << std::endl;
@@ -209,7 +185,7 @@ private:
     }
 
     inline std::vector<ConsolidatedDepartureLabel> collectDepartures(const int minTime, const int maxTime) noexcept {
-        Assert(directTransferArrivalLabels[sourceStation.representative].arrivalTime == 0, "Direct transfer for source " << sourceStation.representative << " is incorrect!");
+        Assert(directTransferArrivalLabels[sourceStop].arrivalTime == 0, "Direct transfer for source " << sourceStop << " is incorrect!");
         const int cutoffTime = std::max(minTime, earliestDepartureTime);
         std::vector<DepartureLabel> departureLabels;
         for (const RouteId route : data.routes()) {
@@ -223,7 +199,7 @@ private:
                     const int departureTime = trip[stopIndex].departureTime - minimalTransferTime;
                     if (departureTime < cutoffTime) continue;
                     if (departureTime > maxTime) break;
-                    if (stationOfStop[stops[stopIndex]].representative == sourceStation.representative) {
+                    if (stops[stopIndex] == sourceStop) {
                         departureLabels.emplace_back(noRouteId, noStopIndex, departureTime);
                     }
                     departureLabels.emplace_back(route, StopIndex(stopIndex), departureTime);
@@ -250,7 +226,7 @@ private:
 
 private:
     inline void clear() noexcept {
-        sourceStation = Station();
+        sourceStop = noStop;
 
         std::vector<ArrivalLabel>(data.transferGraph.numVertices()).swap(directTransferArrivalLabels);
         stopsReachedByDirectTransfer.clear();
@@ -341,9 +317,25 @@ private:
             TripIterator tripIterator = data.getTripIterator(route, stopIndex);
             StopIndex parentIndex = stopIndex;
             while (tripIterator.hasFurtherStops()) {
-                //Find the earliest trip that can be entered at the current stop.
-                while (tripIterator.hasEarlierTrip() && (tripIterator.previousDepartureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop()))) {
-                    tripIterator.previousTrip();
+                //Find earliest trip that can be entered
+                if (tripIterator.hasEarlierTrip() && (tripIterator.previousDepartureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop()))) {
+                    do {
+                        tripIterator.previousTrip();
+                    } while (tripIterator.hasEarlierTrip() && (tripIterator.previousDepartureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop())));
+                    if (!stopsUpdatedByTransfer.contains(tripIterator.stop())) {
+                        //Trip was improved by an arrival that was found during a previous RAPTOR iteration.
+                        //We already explored this trip during that iteration.
+                        //Fast forward to the next stop that was updated in the current iteration and can enter the current trip.
+                        do {
+                            tripIterator.nextStop();
+                        } while (tripIterator.hasFurtherStops() && ((!stopsUpdatedByTransfer.contains(tripIterator.stop())) || (tripIterator.departureTime() < arrivalTime<CURRENT - 1>(tripIterator.stop()))));
+                        parentIndex = tripIterator.getStopIndex();
+                        continue;
+                    }
+                    parentIndex = tripIterator.getStopIndex();
+                }
+                //Candidates may dominate equivalent labels from previous iterations
+                else if (stopsUpdatedByTransfer.contains(tripIterator.stop()) && !isFromCurrentIteration<CURRENT - 1>(tripIterator.stop(parentIndex)) && isCandidate<CURRENT>(tripIterator.stop()) && tripIterator.departureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop())) {
                     parentIndex = tripIterator.getStopIndex();
                 }
                 if constexpr (CURRENT == 2) {
@@ -362,6 +354,13 @@ private:
                 if (newArrivalTime < arrivalTime<CURRENT>(tripIterator.stop())) {
                     arrivalByRoute<CURRENT>(tripIterator.stop(), newArrivalTime, tripIterator.stop(parentIndex));
                 }
+                //Candidates may dominate equivalent labels from previous iterations
+                else if (newArrivalTime == arrivalTime<CURRENT>(tripIterator.stop()) && !isFromCurrentIteration<CURRENT>(tripIterator.stop()) && newArrivalTime < arrivalTime<CURRENT - 1>(tripIterator.stop())) {
+                    const StopId parent = tripIterator.stop(parentIndex);
+                    if (isCandidate<CURRENT>(parent)) {
+                        arrivalByRoute<CURRENT>(tripIterator.stop(), newArrivalTime, parent);
+                    }
+                }
             }
         }
         stopsUpdatedByTransfer.clear();
@@ -372,7 +371,7 @@ private:
     inline bool isCandidate(const StopId parent) const noexcept {
         static_assert((CURRENT == 1) | (CURRENT == 2), "Invalid round!");
         if constexpr (CURRENT == 1) {
-            return stationOfStop[parent].representative == sourceStation.representative;
+            return parent == sourceStop;
         } else {
             return shortcutOrigin[parent] != noStop;
         }
@@ -397,11 +396,11 @@ private:
     // journey and dominate its trip-1 arrival, dropping the candidate (initial
     // walks only ever produce witnesses, which this over-generating search does
     // not need).
-    inline void initialOneHopTransfers() noexcept {
-        for (const StopId sourceStop : sourceStation.stops) {
-            directTransferArrivalLabels[sourceStop].arrivalTime = 0;
-            stopsReachedByDirectTransfer.emplace_back(sourceStop);
-        }
+    // Seeds the search at the source stop. The input graph is stop-to-stop and
+    // is used exactly as given -- no grouping, no first/last-mile preprocessing.
+    inline void initializeSource() noexcept {
+        directTransferArrivalLabels[sourceStop].arrivalTime = 0;
+        stopsReachedByDirectTransfer.emplace_back(sourceStop);
     }
 
     inline void relaxInitialTransfers() noexcept {
@@ -500,7 +499,7 @@ private:
 
     inline void arrivalByRoute1(const StopId stop, const int arrivalTime, const StopId parent) noexcept {
         //Mark journey as candidate or witness
-        if (stationOfStop[parent].representative == sourceStation.representative) {
+        if (parent == sourceStop) {
             oneTripTransferParent[stop] = stop;
         } else {
             oneTripTransferParent[stop] = noStop;
@@ -600,9 +599,7 @@ private:
 private:
     const Data& data;
     DynamicTransferGraph& shortcutGraph;
-    std::vector<Station> stationOfStop;
-
-    Station sourceStation;
+    StopId sourceStop;
     int sourceDepartureTime;
 
     std::vector<ArrivalLabel> directTransferArrivalLabels;

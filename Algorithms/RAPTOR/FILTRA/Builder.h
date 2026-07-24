@@ -7,25 +7,25 @@
 #include "../../../Helpers/Timer.h"
 #include "../../../Helpers/Console/Progress.h"
 
-#include "OneHopShortcutSearch.h"
+#include "ShortcutSearch.h"
 
-namespace RAPTOR::ULTRA {
+namespace RAPTOR::FILTRA {
 
-// Parallel driver for OneHopShortcutSearch: computes the one-hop, bounded-radius
+// Parallel driver for ShortcutSearch: computes the one-hop, bounded-radius
 // ULTRA shortcut graph. Mirrors ULTRA::Builder, but each per-thread search is
 // parameterized by a transfer radius (maxTransferTravelTime, in seconds)
 // instead of a witness transfer limit.
 template<bool DEBUG = false, bool COUNT_OPTIMAL_CANDIDATES = false, bool IGNORE_ISOLATED_CANDIDATES = false>
-class OneHopBuilder {
+class Builder {
 
 public:
     inline static constexpr bool Debug = DEBUG;
     inline static constexpr bool CountOptimalCandidates = COUNT_OPTIMAL_CANDIDATES;
     inline static constexpr bool IgnoreIsolatedCandidates = IGNORE_ISOLATED_CANDIDATES;
-    using Type = OneHopBuilder<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates>;
+    using Type = Builder<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates>;
 
 public:
-    OneHopBuilder(const Data& data) :
+    Builder(const Data& data) :
         data(data) {
         shortcutGraph.addVertices(data.numberOfStops());
         for (const Vertex vertex : shortcutGraph.vertices()) {
@@ -44,7 +44,7 @@ public:
             threadPinning.pinThread();
 
             DynamicTransferGraph localShortcutGraph = shortcutGraph;
-            OneHopShortcutSearch<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates> shortcutSearch(data, localShortcutGraph, maxTransferTravelTime);
+            ShortcutSearch<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates> shortcutSearch(data, localShortcutGraph, maxTransferTravelTime);
 
             #pragma omp for schedule(dynamic)
             for (size_t i = 0; i < data.numberOfStops(); i++) {

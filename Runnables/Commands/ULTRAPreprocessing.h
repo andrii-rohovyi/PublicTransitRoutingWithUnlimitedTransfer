@@ -4,7 +4,7 @@
 #include <string>
 
 #include "../../Algorithms/RAPTOR/ULTRA/Builder.h"
-#include "../../Algorithms/RAPTOR/ULTRA/OneHopBuilder.h"
+#include "../../Algorithms/RAPTOR/FILTRA/Builder.h"
 #include "../../Algorithms/RAPTOR/ULTRA/McBuilder.h"
 #include "../../Algorithms/RAPTOR/ULTRA/MultimodalMcBuilder.h"
 #include "../../Algorithms/TripBased/Preprocessing/DelayULTRABuilder.h"
@@ -159,11 +159,11 @@ private:
     }
 };
 
-class ComputeOneHopStopToStopShortcuts : public ParameterizedCommand {
+class ComputeFILTRAStopToStopShortcuts : public ParameterizedCommand {
 
 public:
-    ComputeOneHopStopToStopShortcuts(BasicShell& shell) :
-        ParameterizedCommand(shell, "computeOneHopStopToStopShortcuts", "Computes stop-to-stop transfer shortcuts using one-hop, bounded-radius ULTRA.") {
+    ComputeFILTRAStopToStopShortcuts(BasicShell& shell) :
+        ParameterizedCommand(shell, "computeFILTRAStopToStopShortcuts", "Computes stop-to-stop transfer shortcuts using one-hop, bounded-radius ULTRA.") {
         addParameter("Input file");
         addParameter("Output file");
         addParameter("Transfer radius (s)", "1800");
@@ -211,7 +211,7 @@ private:
         data.useImplicitDepartureBufferTimes();
         data.printInfo();
 
-        RAPTOR::ULTRA::OneHopBuilder<false, COUNT_OPTIMAL_CANDIDATES, IGNORE_ISOLATED_CANDIDATES> shortcutGraphBuilder(data);
+        RAPTOR::FILTRA::Builder<false, COUNT_OPTIMAL_CANDIDATES, IGNORE_ISOLATED_CANDIDATES> shortcutGraphBuilder(data);
         std::cout << "Computing one-hop stop-to-stop ULTRA shortcuts with radius " << transferRadius << "s (parallel with " << numberOfThreads << " threads)." << std::endl;
         shortcutGraphBuilder.computeShortcuts(ThreadPinning(numberOfThreads, pinMultiplier), transferRadius);
         Graph::move(std::move(shortcutGraphBuilder.getShortcutGraph()), data.transferGraph);

@@ -55,7 +55,6 @@ public:
         sourceDepartureTime(never),
         walkingDistance(INFTY),
         maxTransferTravelTime(INFTY),
-        ultraGraph(nullptr),
         profiler(profilerTemplate) {
         if constexpr (UseMinTransferTimes) {
             Assert(!data.hasImplicitBufferTimes(), "Either min transfer times have to be used OR departure buffer times have to be implicit!");
@@ -71,17 +70,6 @@ public:
     template<typename ATTRIBUTE>
     RAPTOR(const Data& data, const InitialTransferGraph&, const InitialTransferGraph&, const ATTRIBUTE, const Profiler& = Profiler()) :
         RAPTOR(data) {
-    }
-
-    // ULTRA mode. `ultraInitialFinalGraph` (typically the full/transitive graph)
-    // supplies initial and final transfers, while data.transferGraph supplies
-    // intermediate transfers (the ULTRA shortcuts). Without this constructor the
-    // class behaves exactly as plain RAPTOR, so both modes share identical
-    // round/label/scan machinery and can be compared apples-to-apples.
-    RAPTOR(const Data& data, const TransferGraph& ultraInitialFinalGraph, const Profiler& profilerTemplate = Profiler()) :
-        RAPTOR(data, profilerTemplate) {
-        ultraGraph = &ultraInitialFinalGraph;
-        targetTransferTime.resize(data.numberOfStops(), INFTY);
     }
 
     // `maxTransferTravelTime` bounds the travel time of a single transfer edge
@@ -199,10 +187,6 @@ public:
         targetStop = noStop;
         sourceDepartureTime = never;
         walkingDistance = INFTY;
-        for (const StopId stop : targetTransferStops) {
-            targetTransferTime[stop] = INFTY;
-        }
-        targetTransferStops.clear();
         if constexpr (RESET_CAPACITIES) {
             std::vector<Round>().swap(rounds);
             std::vector<ArrivalTime>(earliestArrival.size(), never).swap(earliestArrival);
@@ -234,20 +218,6 @@ private:
         sourceStop = source;
         targetStop = target;
         sourceDepartureTime = departureTime;
-        if ((ultraGraph != nullptr) && (target != noStop)) {
-            // Symmetric graph, so the target's outgoing edges give walk(v -> target).
-            targetTransferTime[target] = 0;
-            targetTransferStops.emplace_back(target);
-            for (const Edge edge : ultraGraph->edgesFrom(target)) {
-                const Vertex neighbor = ultraGraph->get(ToVertex, edge);
-                if (!data.isStop(neighbor)) continue;
-                const int travelTime = ultraGraph->get(TravelTime, edge);
-                if (travelTime < targetTransferTime[neighbor]) {
-                    if (targetTransferTime[neighbor] >= INFTY) targetTransferStops.emplace_back(StopId(neighbor));
-                    targetTransferTime[neighbor] = travelTime;
-                }
-            }
-        }
         startNewRound();
         arrivalByRoute(source, sourceDepartureTime);
         currentRound()[source].parent = source;
@@ -315,41 +285,27 @@ private:
         routesServingUpdatedStops.clear();
         for (const StopId stop : stopsUpdatedByRoute) {
             const int earliestArrivalTime = SeparateRouteAndTransferEntries ? previousRound()[stop].arrivalTime : currentRound()[stop].arrivalTime;
-            const TransferGraph& transferGraph =
-                ((ultraGraph != nullptr) && INITIAL_TRANSFERS) ? *ultraGraph : data.transferGraph;
-            for (const Edge edge : transferGraph.edgesFrom(stop)) {
-                const int transferTravelTime = transferGraph.get(TravelTime, edge);
+            for (const Edge edge : data.transferGraph.edgesFrom(stop)) {
+                const int transferTravelTime = data.transferGraph.get(TravelTime, edge);
                 // Transfer edges are sorted by ascending TravelTime, so once the
                 // per-query radius is exceeded no later edge can satisfy it.
                 if (transferTravelTime > maxTransferTravelTime) break;
                 if constexpr (INITIAL_TRANSFERS && PreventDirectWalking) {
-                    if (transferGraph.get(ToVertex, edge) == targetStop) {
+                    if (data.transferGraph.get(ToVertex, edge) == targetStop) {
                         walkingDistance = transferTravelTime;
                         continue;
                     }
                 }
                 profiler.countMetric(METRIC_EDGES);
                 const int arrivalTime = earliestArrivalTime + transferTravelTime;
-                const Vertex toVertex = transferGraph.get(ToVertex, edge);
-                if ((ultraGraph != nullptr) && !data.isStop(toVertex)) continue;
-                Assert(data.isStop(toVertex), "Graph contains edges to non stop vertices!");
-                const StopId toStop = StopId(toVertex);
+                Assert(data.isStop(data.transferGraph.get(ToVertex, edge)), "Graph contains edges to non stop vertices!");
+                const StopId toStop = StopId(data.transferGraph.get(ToVertex, edge));
                 if (arrivalByTransfer(toStop, arrivalTime)) {
                     EarliestArrivalLabel& label = currentRound()[toStop];
                     label.parent = stop;
                     label.parentDepartureTime = earliestArrivalTime;
                     label.usesRoute = false;
                     label.transferId = edge;
-                }
-            }
-            if ((ultraGraph != nullptr) && !INITIAL_TRANSFERS && (targetStop != noStop)
-                && (targetTransferTime[stop] <= maxTransferTravelTime)) {
-                const int arrivalTime = earliestArrivalTime + targetTransferTime[stop];
-                if (arrivalByTransfer(targetStop, arrivalTime)) {
-                    EarliestArrivalLabel& label = currentRound()[targetStop];
-                    label.parent = stop;
-                    label.parentDepartureTime = earliestArrivalTime;
-                    label.usesRoute = false;
                 }
             }
             if constexpr (SeparateRouteAndTransferEntries) {
@@ -463,12 +419,6 @@ private:
     int sourceDepartureTime;
     int walkingDistance;
     int maxTransferTravelTime;
-
-    // ULTRA mode only (null in plain RAPTOR): graph used for initial and final
-    // transfers, plus the precomputed walk time from each stop to the target.
-    const TransferGraph* ultraGraph;
-    std::vector<int> targetTransferTime;
-    std::vector<StopId> targetTransferStops;
 
     Profiler profiler;
 

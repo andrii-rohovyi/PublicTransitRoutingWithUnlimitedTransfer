@@ -25,7 +25,7 @@ int main(int argc, char** argv) {
     new TestTDGraphLoad(shell);
     new BuildFreeTransferGraph(shell);
     new ComputeStopToStopShortcuts(shell);
-    new ComputeOneHopStopToStopShortcuts(shell);
+    new ComputeFILTRAStopToStopShortcuts(shell);
     new ComputeMcStopToStopShortcuts(shell);
     new ComputeMultimodalMcStopToStopShortcuts(shell);
     new RAPTORToTripBased(shell);
