@@ -322,11 +322,12 @@ private:
         routesServingUpdatedStops.sortKeys();
     }
 
-    // Simple, validated route scan (identical semantics to OneHopRAPTOR's
-    // scanRoutes). No canonical/witness domination logic — this is the "two-phase
-    // OneHopRAPTOR" shortcut extraction: correctness is inherited from the query
-    // algorithm, and shortcuts are over-generated (emitted for every candidate
-    // intermediate transfer) rather than pruned by witnesses.
+    // Simple, validated route scan (identical semantics to the one-hop query
+    // algorithm's scanRoutes, i.e. RAPTOR<..., TRANSITIVE=false, ...>). No
+    // canonical/witness domination logic — this is the "two-phase one-hop RAPTOR"
+    // shortcut extraction: correctness is inherited from the query algorithm, and
+    // shortcuts are over-generated (emitted for every candidate intermediate
+    // transfer) rather than pruned by witnesses.
     template<int CURRENT>
     inline void scanRoutes() noexcept {
         static_assert((CURRENT == 1) | (CURRENT == 2), "Invalid round!");
