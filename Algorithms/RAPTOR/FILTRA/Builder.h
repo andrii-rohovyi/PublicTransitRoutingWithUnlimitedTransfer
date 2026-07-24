@@ -15,13 +15,14 @@ namespace RAPTOR::FILTRA {
 // ULTRA shortcut graph. Mirrors ULTRA::Builder, but each per-thread search is
 // parameterized by a transfer radius (maxTransferTravelTime, in seconds)
 // instead of a witness transfer limit.
-template<bool DEBUG = false, bool COUNT_OPTIMAL_CANDIDATES = false, bool IGNORE_ISOLATED_CANDIDATES = false>
+template<bool DEBUG = false, bool COUNT_OPTIMAL_CANDIDATES = false, bool IGNORE_ISOLATED_CANDIDATES = false, bool EXPLORE_ENDPOINT_TRANSFERS = true>
 class Builder {
 
 public:
     inline static constexpr bool Debug = DEBUG;
     inline static constexpr bool CountOptimalCandidates = COUNT_OPTIMAL_CANDIDATES;
     inline static constexpr bool IgnoreIsolatedCandidates = IGNORE_ISOLATED_CANDIDATES;
+    inline static constexpr bool ExploreEndpointTransfers = EXPLORE_ENDPOINT_TRANSFERS;
     using Type = Builder<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates>;
 
 public:
@@ -44,7 +45,7 @@ public:
             threadPinning.pinThread();
 
             DynamicTransferGraph localShortcutGraph = shortcutGraph;
-            ShortcutSearch<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates> shortcutSearch(data, localShortcutGraph, maxTransferTravelTime);
+            ShortcutSearch<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates, ExploreEndpointTransfers> shortcutSearch(data, localShortcutGraph, maxTransferTravelTime);
 
             #pragma omp for schedule(dynamic)
             for (size_t i = 0; i < data.numberOfStops(); i++) {

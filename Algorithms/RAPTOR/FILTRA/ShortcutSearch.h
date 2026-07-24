@@ -51,13 +51,24 @@ namespace RAPTOR::FILTRA {
 // required one, so the shortcut set remains sufficient. Exact canonical
 // tie-breaking (by id_R / id_V) could be layered on top if a minimal set is
 // required.
-template<bool DEBUG = false, bool COUNT_OPTIMAL_CANDIDATES = false, bool IGNORE_ISOLATED_CANDIDATES = false>
+// EXPLORE_ENDPOINT_TRANSFERS selects between two variants:
+//   true  -- full canonical MR: walk -> trip -> walk -> trip -> walk. The initial
+//            walk lets trip 1 be boarded away from the source; the final walk
+//            witness-prunes candidates. Smaller shortcut set, slower to build.
+//   false -- endpoint-optimised: trip -> walk -> trip. Skips the initial and final
+//            walks, relying on every stop being used as a source, so a journey
+//            that walks before boarding is covered by the search from its boarding
+//            stop. Larger (over-generated) set, much faster to build.
+// Either way only intermediate (alight, board) shortcuts are emitted; first/last
+// mile is answered at query time from the stop-to-stop graph.
+template<bool DEBUG = false, bool COUNT_OPTIMAL_CANDIDATES = false, bool IGNORE_ISOLATED_CANDIDATES = false, bool EXPLORE_ENDPOINT_TRANSFERS = true>
 class ShortcutSearch {
 
 public:
     inline static constexpr bool Debug = DEBUG;
     inline static constexpr bool CountOptimalCandidates = COUNT_OPTIMAL_CANDIDATES;
     inline static constexpr bool IgnoreIsolatedCandidates = IGNORE_ISOLATED_CANDIDATES;
+    inline static constexpr bool ExploreEndpointTransfers = EXPLORE_ENDPOINT_TRANSFERS;
     using Type = ShortcutSearch<Debug, CountOptimalCandidates, IgnoreIsolatedCandidates>;
 
 public:
@@ -338,17 +349,6 @@ private:
                 else if (stopsUpdatedByTransfer.contains(tripIterator.stop()) && !isFromCurrentIteration<CURRENT - 1>(tripIterator.stop(parentIndex)) && isCandidate<CURRENT>(tripIterator.stop()) && tripIterator.departureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop())) {
                     parentIndex = tripIterator.getStopIndex();
                 }
-                if constexpr (CURRENT == 2) {
-                    //Emit the intermediate-transfer shortcut whenever trip 2 is
-                    //boarded at a stop reached via a candidate intermediate
-                    //transfer -- regardless of whether the trip-2 arrival improves
-                    //here, because the 2-trip journey may only be Pareto-optimal
-                    //at the target after a final transfer.
-                    const StopId boardStop = tripIterator.stop(parentIndex);
-                    if (shortcutOrigin[boardStop] != noStop && !shortcutAlreadyExists(boardStop)) {
-                        shortcuts.emplace_back(shortcutOrigin[boardStop], boardStop, shortcutEdgeTime[boardStop]);
-                    }
-                }
                 tripIterator.nextStop();
                 const int newArrivalTime = tripIterator.arrivalTime();
                 if (newArrivalTime < arrivalTime<CURRENT>(tripIterator.stop())) {
@@ -371,7 +371,11 @@ private:
     inline bool isCandidate(const StopId parent) const noexcept {
         static_assert((CURRENT == 1) | (CURRENT == 2), "Invalid round!");
         if constexpr (CURRENT == 1) {
-            return parent == sourceStop;
+            if constexpr (ExploreEndpointTransfers) {
+                return directTransferArrivalLabels[parent].arrivalTime < never;
+            } else {
+                return parent == sourceStop;
+            }
         } else {
             return shortcutOrigin[parent] != noStop;
         }
@@ -401,6 +405,22 @@ private:
     inline void initializeSource() noexcept {
         directTransferArrivalLabels[sourceStop].arrivalTime = 0;
         stopsReachedByDirectTransfer.emplace_back(sourceStop);
+        //Canonical MR explores the initial transfer (initialDijkstra). The input
+        //graph is transitively closed, so one hop is the shortest walk; bound it
+        //by the radius. Edges are sorted by ascending travel time.
+        if constexpr (!ExploreEndpointTransfers) return;
+        for (const Edge edge : data.transferGraph.edgesFrom(sourceStop)) {
+            const int travelTime = data.transferGraph.get(TravelTime, edge);
+            if (travelTime > maxTransferTravelTime) break;
+            const Vertex neighbor = data.transferGraph.get(ToVertex, edge);
+            if (!data.isStop(neighbor)) continue;
+            if (travelTime < directTransferArrivalLabels[neighbor].arrivalTime) {
+                if (directTransferArrivalLabels[neighbor].arrivalTime >= never) {
+                    stopsReachedByDirectTransfer.emplace_back(StopId(neighbor));
+                }
+                directTransferArrivalLabels[neighbor].arrivalTime = travelTime;
+            }
+        }
     }
 
     inline void relaxInitialTransfers() noexcept {
@@ -470,7 +490,53 @@ private:
     // No final-transfer / witness-domination phase: shortcuts are emitted
     // directly in arrivalByRoute2 (over-generating, no pruning), so this only
     // clears the round-2 arrivals.
+    // Canonical MR's finalDijkstra, as a one-hop phase: the input graph is
+    // transitively closed, so a single hop is the shortest walk. A candidate is
+    // witnessed (and discarded) if some 2-trip journey reaches its stop strictly
+    // earlier by walking; survivors become shortcuts. The route-based arrivals are
+    // snapshotted first so the test is independent of relaxation order.
     inline void finalOneHopTransfers() noexcept {
+        if constexpr (!ExploreEndpointTransfers) {
+            //No final walk in this variant, so candidates cannot be witness-pruned
+            //here. Emit every candidate instead: over-generating is safe, dropping
+            //a needed shortcut is not.
+            for (const StopId stop : stopsUpdatedByRoute) {
+                const StopId boardStop = twoTripsRouteParent[stop];
+                if (!data.isStop(boardStop)) continue;
+                if (shortcutOrigin[boardStop] == noStop) continue;
+                if (shortcutAlreadyExists(boardStop)) continue;
+                shortcuts.emplace_back(shortcutOrigin[boardStop], boardStop, shortcutEdgeTime[boardStop]);
+            }
+            stopsUpdatedByRoute.clear();
+            return;
+        }
+        finalRouteArrivals.clear();
+        for (const StopId stop : stopsUpdatedByRoute) {
+            finalRouteArrivals.emplace_back(stop, twoTripsArrivalLabels[stop].arrivalTime);
+        }
+        for (const auto& [from, baseTime] : finalRouteArrivals) {
+            for (const Edge edge : data.transferGraph.edgesFrom(from)) {
+                const int travelTime = data.transferGraph.get(TravelTime, edge);
+                if (travelTime > maxTransferTravelTime) break;
+                const Vertex to = data.transferGraph.get(ToVertex, edge);
+                if (!data.isStop(to)) continue;
+                const int newArrivalTime = baseTime + travelTime;
+                if (newArrivalTime < twoTripsArrivalLabels[to].arrivalTime) {
+                    updateArrival<2>(to, newArrivalTime, timestamp);
+                    //A witness reached this stop earlier => its candidate dies.
+                    twoTripsRouteParent[StopId(to)] = noStop;
+                }
+            }
+        }
+        for (const auto& [stop, baseTime] : finalRouteArrivals) {
+            suppressUnusedParameterWarning(baseTime);
+            const StopId boardStop = twoTripsRouteParent[stop];
+            if (!data.isStop(boardStop)) continue;
+            if (shortcutOrigin[boardStop] == noStop) continue;
+            if (shortcutAlreadyExists(boardStop)) continue;
+            shortcuts.emplace_back(shortcutOrigin[boardStop], boardStop, shortcutEdgeTime[boardStop]);
+            twoTripsRouteParent[stop] = noStop;
+        }
         stopsUpdatedByRoute.clear();
     }
 
@@ -499,7 +565,8 @@ private:
 
     inline void arrivalByRoute1(const StopId stop, const int arrivalTime, const StopId parent) noexcept {
         //Mark journey as candidate or witness
-        if (parent == sourceStop) {
+        if (ExploreEndpointTransfers ? (directTransferArrivalLabels[parent].arrivalTime < never)
+                                     : (parent == sourceStop)) {
             oneTripTransferParent[stop] = stop;
         } else {
             oneTripTransferParent[stop] = noStop;
@@ -516,8 +583,15 @@ private:
         stopsUpdatedByRoute.insert(stop);
     }
 
-    inline void arrivalByRoute2(const StopId stop, const int arrivalTime, const StopId) noexcept {
-        //Shortcuts are emitted at the trip-2 boarding point in scanRoutes<2>.
+    inline void arrivalByRoute2(const StopId stop, const int arrivalTime, const StopId parent) noexcept {
+        //Mark the journey as a candidate: the trip-2 boarding stop `parent` must
+        //have been reached by a candidate intermediate transfer. Whether the
+        //candidate survives is decided by the final one-hop phase.
+        if ((shortcutOrigin[parent] != noStop) && !shortcutAlreadyExists(parent)) {
+            twoTripsRouteParent[stop] = parent;
+        } else {
+            twoTripsRouteParent[stop] = noStop;
+        }
         updateArrival<2>(stop, arrivalTime, timestamp);
         stopsUpdatedByRoute.insert(stop);
     }
@@ -604,6 +678,7 @@ private:
 
     std::vector<ArrivalLabel> directTransferArrivalLabels;
     std::vector<StopId> stopsReachedByDirectTransfer;
+    std::vector<std::pair<StopId, int>> finalRouteArrivals;
 
     std::vector<ArrivalLabel> zeroTripsArrivalLabels;
 

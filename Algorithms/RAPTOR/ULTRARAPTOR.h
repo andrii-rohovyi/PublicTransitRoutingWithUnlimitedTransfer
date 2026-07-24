@@ -16,7 +16,11 @@
 
 namespace RAPTOR {
 
-template<typename PROFILER = NoProfiler, bool PREVENT_DIRECT_WALKING = false, typename INITIAL_TRANSFERS = BucketCHInitialTransfers>
+// SEPARATE_ROUTE_AND_TRANSFER_ENTRIES defaults to PREVENT_DIRECT_WALKING, which
+// preserves the original behaviour for every existing caller. Setting it to true
+// gives one-hop semantics (a transfer occupies its own round and can only follow
+// a route leg), matching RAPTOR<..., TRANSITIVE=false, ...>.
+template<typename PROFILER = NoProfiler, bool PREVENT_DIRECT_WALKING = false, typename INITIAL_TRANSFERS = BucketCHInitialTransfers, bool SEPARATE_ROUTE_AND_TRANSFER_ENTRIES = PREVENT_DIRECT_WALKING>
 class ULTRARAPTOR {
 
 public:
@@ -24,7 +28,7 @@ public:
     static constexpr bool PreventDirectWalking = PREVENT_DIRECT_WALKING;
     using InitialTransferType = INITIAL_TRANSFERS;
     using InitialTransferGraph = typename InitialTransferType::Graph;
-    static constexpr bool SeparateRouteAndTransferEntries = PreventDirectWalking;
+    static constexpr bool SeparateRouteAndTransferEntries = SEPARATE_ROUTE_AND_TRANSFER_ENTRIES;
     static constexpr int RoundFactor = SeparateRouteAndTransferEntries ? 2 : 1;
     using ArrivalTime = EarliestArrivalTime<SeparateRouteAndTransferEntries>;
     using Type = ULTRARAPTOR<Profiler, PreventDirectWalking, InitialTransferType>;
