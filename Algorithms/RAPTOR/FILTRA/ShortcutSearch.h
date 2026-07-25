@@ -349,6 +349,17 @@ private:
                 else if (stopsUpdatedByTransfer.contains(tripIterator.stop()) && !isFromCurrentIteration<CURRENT - 1>(tripIterator.stop(parentIndex)) && isCandidate<CURRENT>(tripIterator.stop()) && tripIterator.departureTime() >= arrivalTime<CURRENT - 1>(tripIterator.stop())) {
                     parentIndex = tripIterator.getStopIndex();
                 }
+                if constexpr (CURRENT == 2 && !ExploreEndpointTransfers) {
+                    //Endpoint-optimised variant: emit the intermediate shortcut at
+                    //the trip-2 BOARDING point, unconditionally. The two-trip
+                    //journey may only be Pareto-optimal after a later leg (e.g. a
+                    //final walk), so its trip-2 arrival need not improve here.
+                    //Gating emission on arrival improvement drops such shortcuts.
+                    const StopId boardStop = tripIterator.stop(parentIndex);
+                    if (shortcutOrigin[boardStop] != noStop && !shortcutAlreadyExists(boardStop)) {
+                        shortcuts.emplace_back(shortcutOrigin[boardStop], boardStop, shortcutEdgeTime[boardStop]);
+                    }
+                }
                 tripIterator.nextStop();
                 const int newArrivalTime = tripIterator.arrivalTime();
                 if (newArrivalTime < arrivalTime<CURRENT>(tripIterator.stop())) {
@@ -497,16 +508,8 @@ private:
     // snapshotted first so the test is independent of relaxation order.
     inline void finalOneHopTransfers() noexcept {
         if constexpr (!ExploreEndpointTransfers) {
-            //No final walk in this variant, so candidates cannot be witness-pruned
-            //here. Emit every candidate instead: over-generating is safe, dropping
-            //a needed shortcut is not.
-            for (const StopId stop : stopsUpdatedByRoute) {
-                const StopId boardStop = twoTripsRouteParent[stop];
-                if (!data.isStop(boardStop)) continue;
-                if (shortcutOrigin[boardStop] == noStop) continue;
-                if (shortcutAlreadyExists(boardStop)) continue;
-                shortcuts.emplace_back(shortcutOrigin[boardStop], boardStop, shortcutEdgeTime[boardStop]);
-            }
+            //Endpoint-optimised variant: shortcuts are emitted unconditionally at
+            //the trip-2 boarding point in scanRoutes<2>, so nothing to do here.
             stopsUpdatedByRoute.clear();
             return;
         }
