@@ -25,6 +25,7 @@ int main(int argc, char** argv) {
     new TestTDGraphLoad(shell);
     new BuildFreeTransferGraph(shell);
     new ComputeStopToStopShortcuts(shell);
+    new ComputeFILTRAStopToStopShortcuts(shell);
     new ComputeMcStopToStopShortcuts(shell);
     new ComputeMultimodalMcStopToStopShortcuts(shell);
     new RAPTORToTripBased(shell);
@@ -44,6 +45,8 @@ int main(int argc, char** argv) {
     new RunHLCSAQueries(shell);
     new RunULTRACSAQueries(shell);
     new RunTransitiveRAPTORQueries(shell);
+    new RunOneHopRAPTORQueries(shell);
+    new RunFILTRAQueries(shell);
     new RunDijkstraRAPTORQueries(shell);
     new CheckMRBucketCH(shell);
     new ComparePaperAlgorithms(shell);

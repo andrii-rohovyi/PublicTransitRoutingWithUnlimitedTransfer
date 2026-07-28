@@ -54,6 +54,7 @@ public:
         targetStop(noStop),
         sourceDepartureTime(never),
         walkingDistance(INFTY),
+        maxTransferTravelTime(INFTY),
         profiler(profilerTemplate) {
         if constexpr (UseMinTransferTimes) {
             Assert(!data.hasImplicitBufferTimes(), "Either min transfer times have to be used OR departure buffer times have to be implicit!");
@@ -71,12 +72,18 @@ public:
         RAPTOR(data) {
     }
 
-    inline void run(const StopId source, const int departureTime, const StopId target = noStop, const size_t maxRounds = INFTY) noexcept {
+    // `maxTransferTravelTime` bounds the travel time of a single transfer edge
+    // (seconds), applied to initial, intermediate and final transfers alike. The
+    // default INFTY leaves behaviour identical to plain RAPTOR. Values below
+    // INFTY require the transfer graph to be sorted by ascending TravelTime (see
+    // Data::sortTransferGraphEdgesByTravelTime), which the early exit relies on.
+    inline void run(const StopId source, const int departureTime, const StopId target = noStop, const size_t maxRounds = INFTY, const int maxTransferTravelTime = INFTY) noexcept {
         profiler.start();
         profiler.startExtraRound(EXTRA_ROUND_CLEAR);
         clear();
         profiler.doneRound();
 
+        this->maxTransferTravelTime = maxTransferTravelTime;
         profiler.startExtraRound(EXTRA_ROUND_INITIALIZATION);
         profiler.startPhase();
         initialize(source, departureTime, target);
@@ -279,14 +286,18 @@ private:
         for (const StopId stop : stopsUpdatedByRoute) {
             const int earliestArrivalTime = SeparateRouteAndTransferEntries ? previousRound()[stop].arrivalTime : currentRound()[stop].arrivalTime;
             for (const Edge edge : data.transferGraph.edgesFrom(stop)) {
+                const int transferTravelTime = data.transferGraph.get(TravelTime, edge);
+                // Transfer edges are sorted by ascending TravelTime, so once the
+                // per-query radius is exceeded no later edge can satisfy it.
+                if (transferTravelTime > maxTransferTravelTime) break;
                 if constexpr (INITIAL_TRANSFERS && PreventDirectWalking) {
                     if (data.transferGraph.get(ToVertex, edge) == targetStop) {
-                        walkingDistance = data.transferGraph.get(TravelTime, edge);
+                        walkingDistance = transferTravelTime;
                         continue;
                     }
                 }
                 profiler.countMetric(METRIC_EDGES);
-                const int arrivalTime = earliestArrivalTime + data.transferGraph.get(TravelTime, edge);
+                const int arrivalTime = earliestArrivalTime + transferTravelTime;
                 Assert(data.isStop(data.transferGraph.get(ToVertex, edge)), "Graph contains edges to non stop vertices!");
                 const StopId toStop = StopId(data.transferGraph.get(ToVertex, edge));
                 if (arrivalByTransfer(toStop, arrivalTime)) {
@@ -407,6 +418,7 @@ private:
     StopId targetStop;
     int sourceDepartureTime;
     int walkingDistance;
+    int maxTransferTravelTime;
 
     Profiler profiler;
 

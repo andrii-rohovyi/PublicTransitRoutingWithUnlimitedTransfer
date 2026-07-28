@@ -16,7 +16,11 @@
 
 namespace RAPTOR {
 
-template<typename PROFILER = NoProfiler, bool PREVENT_DIRECT_WALKING = false, typename INITIAL_TRANSFERS = BucketCHInitialTransfers>
+// SEPARATE_ROUTE_AND_TRANSFER_ENTRIES defaults to PREVENT_DIRECT_WALKING, which
+// preserves the original behaviour for every existing caller. Setting it to true
+// gives one-hop semantics (a transfer occupies its own round and can only follow
+// a route leg), matching RAPTOR<..., TRANSITIVE=false, ...>.
+template<typename PROFILER = NoProfiler, bool PREVENT_DIRECT_WALKING = false, typename INITIAL_TRANSFERS = BucketCHInitialTransfers, bool SEPARATE_ROUTE_AND_TRANSFER_ENTRIES = PREVENT_DIRECT_WALKING>
 class ULTRARAPTOR {
 
 public:
@@ -24,7 +28,7 @@ public:
     static constexpr bool PreventDirectWalking = PREVENT_DIRECT_WALKING;
     using InitialTransferType = INITIAL_TRANSFERS;
     using InitialTransferGraph = typename InitialTransferType::Graph;
-    static constexpr bool SeparateRouteAndTransferEntries = PreventDirectWalking;
+    static constexpr bool SeparateRouteAndTransferEntries = SEPARATE_ROUTE_AND_TRANSFER_ENTRIES;
     static constexpr int RoundFactor = SeparateRouteAndTransferEntries ? 2 : 1;
     using ArrivalTime = EarliestArrivalTime<SeparateRouteAndTransferEntries>;
     using Type = ULTRARAPTOR<Profiler, PreventDirectWalking, InitialTransferType>;
@@ -77,7 +81,15 @@ public:
         ULTRARAPTOR(data, forwardGraph, backwardGraph, TravelTime, profilerTemplate) {
     }
 
-    inline void run(const Vertex source, const int departureTime, const Vertex target, const size_t maxRounds = INFTY) noexcept {
+    // `maxTransferTravelTime` bounds a single transfer edge (seconds), applied to
+    // initial, intermediate and final transfers. INFTY (default) = unchanged.
+    inline void run(const Vertex source, const int departureTime, const Vertex target, const size_t maxRounds = INFTY, const int maxTransferTravelTime = INFTY) noexcept {
+        this->maxTransferTravelTime = maxTransferTravelTime;
+        // Only TransitiveInitialTransfers bounds initial/final transfers by radius;
+        // CH-based initial transfers have no such method, so guard the call.
+        if constexpr (requires { initialTransfers.setMaxTransferTravelTime(maxTransferTravelTime); }) {
+            initialTransfers.setMaxTransferTravelTime(maxTransferTravelTime);
+        }
         profiler.start();
         profiler.startExtraRound(EXTRA_ROUND_CLEAR);
         clear();
@@ -347,10 +359,13 @@ private:
         for (const StopId stop : stopsUpdatedByRoute) {
             const int earliestArrivalTime = SeparateRouteAndTransferEntries ? previousRound()[stop].arrivalTime : currentRound()[stop].arrivalTime;
             for (const Edge edge : data.transferGraph.edgesFrom(stop)) {
+                const int transferTravelTime = data.transferGraph.get(TravelTime, edge);
+                //Edges are sorted by ascending travel time.
+                if (transferTravelTime > maxTransferTravelTime) break;
                 const StopId toStop = StopId(data.transferGraph.get(ToVertex, edge));
                 if (toStop == targetStop) continue;
                 profiler.countMetric(METRIC_EDGES);
-                const int arrivalTime = earliestArrivalTime + data.transferGraph.get(TravelTime, edge);
+                const int arrivalTime = earliestArrivalTime + transferTravelTime;
                 Assert(data.isStop(data.transferGraph.get(ToVertex, edge)), "Graph contains edges to non stop vertices!");
                 if (arrivalByTransfer(toStop, arrivalTime)) {
                     EarliestArrivalLabel& label = currentRound()[toStop];
@@ -459,6 +474,7 @@ private:
     const Data& data;
 
     InitialTransferType initialTransfers;
+    int maxTransferTravelTime = INFTY;
 
     std::vector<Round> rounds;
 

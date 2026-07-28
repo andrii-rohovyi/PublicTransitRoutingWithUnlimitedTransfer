@@ -4,6 +4,7 @@
 #include <string>
 
 #include "../../Algorithms/RAPTOR/ULTRA/Builder.h"
+#include "../../Algorithms/RAPTOR/FILTRA/Builder.h"
 #include "../../Algorithms/RAPTOR/ULTRA/McBuilder.h"
 #include "../../Algorithms/RAPTOR/ULTRA/MultimodalMcBuilder.h"
 #include "../../Algorithms/TripBased/Preprocessing/DelayULTRABuilder.h"
@@ -149,6 +150,70 @@ private:
         RAPTOR::ULTRA::Builder<false, COUNT_OPTIMAL_CANDIDATES, IGNORE_ISOLATED_CANDIDATES> shortcutGraphBuilder(data);
         std::cout << "Computing stop-to-stop ULTRA shortcuts (parallel with " << numberOfThreads << " threads)." << std::endl;
         shortcutGraphBuilder.computeShortcuts(ThreadPinning(numberOfThreads, pinMultiplier), witnessLimit);
+        Graph::move(std::move(shortcutGraphBuilder.getShortcutGraph()), data.transferGraph);
+
+        data.dontUseImplicitDepartureBufferTimes();
+        Graph::printInfo(data.transferGraph);
+        data.transferGraph.printAnalysis();
+        data.serialize(outputFile);
+    }
+};
+
+class ComputeFILTRAStopToStopShortcuts : public ParameterizedCommand {
+
+public:
+    ComputeFILTRAStopToStopShortcuts(BasicShell& shell) :
+        ParameterizedCommand(shell, "computeFILTRAStopToStopShortcuts", "Computes stop-to-stop transfer shortcuts using one-hop, bounded-radius ULTRA.") {
+        addParameter("Input file");
+        addParameter("Output file");
+        addParameter("Transfer radius (s)", "1800");
+        addParameter("Number of threads", "max");
+        addParameter("Pin multiplier", "1");
+        addParameter("Count optimal candidates?", "false");
+        addParameter("Ignore isolated candidates?", "false");
+    }
+
+    virtual void execute() noexcept {
+        if (getParameter<bool>("Count optimal candidates?")) {
+            chooseIgnoreIsolated<true>();
+        } else {
+            chooseIgnoreIsolated<false>();
+        }
+    }
+
+private:
+    inline size_t getNumberOfThreads() const noexcept {
+        if (getParameter("Number of threads") == "max") {
+            return numberOfCores();
+        } else {
+            return getParameter<int>("Number of threads");
+        }
+    }
+
+    template<bool COUNT_OPTIMAL_CANDIDATES>
+    inline void chooseIgnoreIsolated() const noexcept {
+        if (getParameter<bool>("Ignore isolated candidates?")) {
+            run<COUNT_OPTIMAL_CANDIDATES, true>();
+        } else {
+            run<COUNT_OPTIMAL_CANDIDATES, false>();
+        }
+    }
+
+    template<bool COUNT_OPTIMAL_CANDIDATES, bool IGNORE_ISOLATED_CANDIDATES>
+    inline void run() const noexcept {
+        const std::string inputFile = getParameter("Input file");
+        const int transferRadius = getParameter<int>("Transfer radius (s)");
+        const std::string outputFile = getParameter("Output file");
+        const size_t numberOfThreads = getNumberOfThreads();
+        const size_t pinMultiplier = getParameter<size_t>("Pin multiplier");
+
+        RAPTOR::Data data(inputFile);
+        data.useImplicitDepartureBufferTimes();
+        data.printInfo();
+
+        RAPTOR::FILTRA::Builder<false, COUNT_OPTIMAL_CANDIDATES, IGNORE_ISOLATED_CANDIDATES> shortcutGraphBuilder(data);
+        std::cout << "Computing one-hop stop-to-stop ULTRA shortcuts with radius " << transferRadius << "s (parallel with " << numberOfThreads << " threads)." << std::endl;
+        shortcutGraphBuilder.computeShortcuts(ThreadPinning(numberOfThreads, pinMultiplier), transferRadius);
         Graph::move(std::move(shortcutGraphBuilder.getShortcutGraph()), data.transferGraph);
 
         data.dontUseImplicitDepartureBufferTimes();
