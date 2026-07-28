@@ -1519,7 +1519,7 @@ public:
         addParameter("FILTRA shortcut file");
         addParameter("Transitive closure file");
         addParameter("Number of queries");
-        addParameter("Max transfer travel time (s)", "3600");
+        addParameter("Max transfer travel time (s)" );
     }
 
     virtual void execute() noexcept {
