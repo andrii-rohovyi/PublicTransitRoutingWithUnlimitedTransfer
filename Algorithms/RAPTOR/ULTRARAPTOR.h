@@ -85,7 +85,11 @@ public:
     // initial, intermediate and final transfers. INFTY (default) = unchanged.
     inline void run(const Vertex source, const int departureTime, const Vertex target, const size_t maxRounds = INFTY, const int maxTransferTravelTime = INFTY) noexcept {
         this->maxTransferTravelTime = maxTransferTravelTime;
-        initialTransfers.setMaxTransferTravelTime(maxTransferTravelTime);
+        // Only TransitiveInitialTransfers bounds initial/final transfers by radius;
+        // CH-based initial transfers have no such method, so guard the call.
+        if constexpr (requires { initialTransfers.setMaxTransferTravelTime(maxTransferTravelTime); }) {
+            initialTransfers.setMaxTransferTravelTime(maxTransferTravelTime);
+        }
         profiler.start();
         profiler.startExtraRound(EXTRA_ROUND_CLEAR);
         clear();

@@ -1511,6 +1511,64 @@ public:
     }
 };
 
+class RunFILTRAQueries : public ParameterizedCommand {
+
+public:
+    RunFILTRAQueries(BasicShell& shell) :
+        ParameterizedCommand(shell, "runFILTRAQueries", "Evaluates FILTRA (one-hop ULTRA shortcuts): shortcuts for intermediate transfers, transitive closure for initial/final. Compares against one-hop RAPTOR on the closure and reports correctness + timings. Build radius must equal query radius.") {
+        addParameter("FILTRA shortcut file");
+        addParameter("Transitive closure file");
+        addParameter("Number of queries");
+        addParameter("Max transfer travel time (s)", "3600");
+    }
+
+    virtual void execute() noexcept {
+        RAPTOR::Data shortcutData = RAPTOR::Data::FromBinary(getParameter("FILTRA shortcut file"));
+        shortcutData.useImplicitDepartureBufferTimes();
+        shortcutData.sortTransferGraphEdgesByTravelTime();
+        std::cout << "FILTRA shortcut graph:" << std::endl;
+        Graph::printInfo(shortcutData.transferGraph);
+
+        RAPTOR::Data closureData = RAPTOR::Data::FromBinary(getParameter("Transitive closure file"));
+        closureData.useImplicitDepartureBufferTimes();
+        closureData.sortTransferGraphEdgesByTravelTime();
+        std::cout << "Transitive closure graph:" << std::endl;
+        Graph::printInfo(closureData.transferGraph);
+
+        const size_t n = getParameter<size_t>("Number of queries");
+        const int maxTransferTravelTime = getParameter<int>("Max transfer travel time (s)");
+        std::cout << "Transfer radius: " << maxTransferTravelTime << " s ("
+                  << String::prettyDouble(maxTransferTravelTime / 60.0) << " min)" << std::endl;
+
+        // Baseline: one-hop RAPTOR on the full closure (TRANSITIVE=false).
+        RAPTOR::RAPTOR<true, RAPTOR::AggregateProfiler, false> baseline(closureData);
+        // FILTRA: shortcuts for intermediate transfers, closure for initial/final
+        // (TransitiveInitialTransfers), one-hop rounds (4th template arg = true).
+        RAPTOR::ULTRARAPTOR<RAPTOR::AggregateProfiler, false, RAPTOR::TransitiveInitialTransfers, true>
+            filtra(shortcutData, closureData.transferGraph, closureData.transferGraph);
+
+        const std::vector<StopQuery> queries = generateRandomStopQueries(shortcutData.numberOfStops(), n);
+        size_t identical = 0, mismatches = 0;
+        for (const StopQuery& query : queries) {
+            baseline.run(query.source, query.departureTime, query.target, INFTY, maxTransferTravelTime);
+            filtra.run(Vertex(query.source), query.departureTime, Vertex(query.target), INFTY, maxTransferTravelTime);
+            if (baseline.getArrivals() == filtra.getArrivals()) {
+                identical++;
+            } else {
+                mismatches++;
+            }
+        }
+        std::cout << "=== Correctness over " << n << " queries ===" << std::endl;
+        std::cout << "Identical Pareto sets: " << identical << " / " << n << std::endl;
+        std::cout << "Mismatches:            " << mismatches << " / " << n << std::endl;
+
+        std::cout << "=== Performance: baseline (one-hop RAPTOR on closure) ===" << std::endl;
+        baseline.getProfiler().printStatistics();
+        std::cout << "=== Performance: FILTRA (shortcuts + closure for initial/final) ===" << std::endl;
+        filtra.getProfiler().printStatistics();
+    }
+};
+
 class TestTransitiveRAPTORQueries : public ParameterizedCommand {
 
 public:

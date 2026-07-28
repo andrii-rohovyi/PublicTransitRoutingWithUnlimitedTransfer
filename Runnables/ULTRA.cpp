@@ -46,6 +46,7 @@ int main(int argc, char** argv) {
     new RunULTRACSAQueries(shell);
     new RunTransitiveRAPTORQueries(shell);
     new RunOneHopRAPTORQueries(shell);
+    new RunFILTRAQueries(shell);
     new RunDijkstraRAPTORQueries(shell);
     new CheckMRBucketCH(shell);
     new ComparePaperAlgorithms(shell);
